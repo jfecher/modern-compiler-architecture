@@ -24,5 +24,9 @@ pub enum Token {
     /// `print`
     Print,
     /// `->`
-    RightArrow
+    RightArrow,
+    /// This character is not in the language - it is an error.
+    /// We treat it as a token though since the lexer shouldn't error. It will get to the
+    /// parser and the parser can error instead and decide how to recover.
+    Unexpected(char),
 }

@@ -78,9 +78,10 @@ impl<'src> Lexer<'src> {
             c if c.is_alphanumeric() => self.lex_word(),
             c if c.is_ascii_digit() => self.lex_integer(),
             '\0' => None, // End of input
+            // Unexpected token. We can't error so give it to the parser to error there
             unexpected => {
-                // Unexpected token
-                todo!("Unexpected char `{unexpected}`")
+                self.advance();
+                Some(Token::Unexpected(unexpected))
             }
         }
     }
