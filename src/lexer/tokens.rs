@@ -1,5 +1,7 @@
+use std::fmt::Display;
 
-#[derive(Debug, PartialEq, Eq)]
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     /// `:`
     Colon,
@@ -19,6 +21,10 @@ pub enum Token {
     Minus,
     /// `{0}` (the given string)
     Name(String),
+    /// `(`
+    ParenLeft,
+    /// `)`
+    ParenRight,
     /// `+`
     Plus,
     /// `print`
@@ -29,4 +35,32 @@ pub enum Token {
     /// We treat it as a token though since the lexer shouldn't error. It will get to the
     /// parser and the parser can error instead and decide how to recover.
     Unexpected(char),
+}
+
+impl Token {
+    pub fn can_start_top_level_statement(&self) -> bool {
+        matches!(self, Token::Def | Token::Import | Token::Print)
+    }
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            Token::Colon => write!(f, ":"),
+            Token::Def => write!(f, "def"),
+            Token::Equals => write!(f, "="),
+            Token::Fn => write!(f, "fn"),
+            Token::Import => write!(f, "import"),
+            Token::Int => write!(f, "Int"),
+            Token::Integer(x) => write!(f, "{x}"),
+            Token::Minus => write!(f, "-"),
+            Token::Name(name) => write!(f, "{name}"),
+            Token::ParenLeft => write!(f, "("),
+            Token::ParenRight => write!(f, ")"),
+            Token::Plus => write!(f, "+"),
+            Token::Print => write!(f, "print"),
+            Token::RightArrow => write!(f, "->"),
+            Token::Unexpected(c) => write!(f, "{c}"),
+        }
+    }
 }
