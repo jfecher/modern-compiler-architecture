@@ -52,7 +52,7 @@ concurrent branching in the compiler.
 
 Here's an example showing all the syntax in the language:
 
-```groovy
+```boo
 // Comments start with `//` and only line comments are supported
 
 // We can declare external submodules with `module <name>`. This will look for
