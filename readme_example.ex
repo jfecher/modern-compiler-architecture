@@ -1,10 +1,10 @@
 // Comments start with `//` and only line comments are supported
 
-// We can declare external submodules with `module <name>`. This will look for
+// We can declare and import external submodules with `import <name>`. This will look for
 // files named `foo.ex` and `bar.ex` in the same directory.
 // All definitions are imported automatically and all definitions are public
-module foo
-module bar
+import foo
+import bar
 
 // Functions start with `def` and return an expression
 // Type inference is supported
@@ -23,6 +23,6 @@ def apply = fn f x -> f x
 
 // `print` is a top-level statement which outputs the result of an expression.
 // These are executed from top to bottom. `print`s in a submodule are executed
-// when the `module <name>` statement is used. In this program, we would print
+// when the `import <name>` statement is used. In this program, we would print
 // any `print`s in module `foo`, then `bar`, then this print.
 print add 1 2

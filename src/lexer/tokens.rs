@@ -9,14 +9,14 @@ pub enum Token {
     Equals,
     /// `fn`
     Fn,
+    /// `import`
+    Import,
     /// `Int`
     Int,
     /// An integer literal - these must be positive i64 values
     Integer(i64),
     /// `-`
     Minus,
-    /// `module`
-    Module,
     /// `{0}` (the given string)
     Name(String),
     /// `+`

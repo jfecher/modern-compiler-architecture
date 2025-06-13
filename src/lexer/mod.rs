@@ -105,8 +105,8 @@ impl<'src> Lexer<'src> {
         match word.as_str() {
             "def" => Some(Token::Def),
             "fn" => Some(Token::Fn),
+            "import" => Some(Token::Import),
             "Int" => Some(Token::Int),
-            "module" => Some(Token::Module),
             "print" => Some(Token::Print),
             _other => Some(Token::Name(word)),
         }
