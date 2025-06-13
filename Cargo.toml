@@ -1,0 +1,7 @@
+[package]
+name = "modern_compiler_architecture"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+inc-complete = "0.3.1"
