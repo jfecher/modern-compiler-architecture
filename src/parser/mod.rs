@@ -1,32 +1,58 @@
 use std::rc::Rc;
 
-use ast::{Ast, Definition, Expression, TopLevelStatement, Type};
+use ast::{Ast, Definition, Expression, Identifier, TopLevelStatement, Type};
 
-use crate::{errors::Error, lexer::tokens::Token};
+use crate::{errors::{Error, Location, LocationData, Position}, lexer::tokens::Token};
 
 pub mod ast;
 
 struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<(Token, Location)>,
     current_token_index: usize,
 
+    file_name: Rc<String>,
     errors: Vec<Error>
 }
 
-pub fn parse(tokens: Vec<Token>) -> (Ast, Vec<Error>) {
-    let mut parser = Parser::new(tokens);
+pub fn parse(file_name: Rc<String>, tokens: Vec<(Token, Location)>) -> (Ast, Vec<Error>) {
+    let mut parser = Parser::new(file_name, tokens);
     let ast = parser.parse();
     (ast, parser.errors)
 }
 
 impl Parser {
-    fn new(tokens: Vec<Token>) -> Self {
-        Parser { tokens, errors: Vec::new(), current_token_index: 0 }
+    fn new(file_name: Rc<String>, tokens: Vec<(Token, Location)>) -> Self {
+        Parser { file_name, tokens, errors: Vec::new(), current_token_index: 0 }
     }
 
     /// Returns the current token, or None if we've reached the end of input
     fn current_token(&self) -> Option<&Token> {
-        self.tokens.get(self.current_token_index)
+        self.tokens.get(self.current_token_index).map(|(token, _)| token)
+    }
+
+    /// Returns the current location, or the location of the last token if
+    /// we've reached the end of input. If there are no tokens at all, an
+    /// empty Location is returned.
+    fn current_location(&self) -> Location {
+        match self.tokens.get(self.current_token_index) {
+            Some((_, location)) => location.clone(),
+            None => match self.tokens.last() {
+                Some((_, location)) => location.clone(),
+                None => {
+                    // Corner case: file doesn't contain a single token
+                    let position = Position::start();
+                    let file_name = self.file_name.clone();
+                    Rc::new(LocationData { file_name, start: position, end: position })
+                }
+            }
+        }
+    }
+
+    /// Returns the current token, or None if we've reached the end of input,
+    /// along with the current location. If we've reached the end of input,
+    /// the last token's location is used.
+    fn current_token_and_location(&self) -> (Option<&Token>, Location) {
+        (self.current_token(), self.current_location())
     }
 
     /// Advance to the next token
@@ -51,8 +77,9 @@ impl Parser {
         if self.accept(token.clone()) {
             Ok(())
         } else {
-            let actual = self.current_token().cloned();
-            Err(Error::ExpectedToken { expected: token, found: actual })
+            let (actual, location) = self.current_token_and_location();
+            let actual = actual.cloned();
+            Err(Error::ExpectedToken { expected: token, found: actual, location })
         }
     }
 
@@ -73,8 +100,9 @@ impl Parser {
 
         if !self.current_token().is_none() {
             // We have unparsed input
-            let found = self.current_token().cloned();
-            self.errors.push(Error::ExpectedRule { rule: "top level statement", found });
+            let (found, location) = self.current_token_and_location();
+            let found = found.cloned();
+            self.errors.push(Error::ExpectedRule { rule: "top level statement", found, location });
         }
 
         Ast { statements  }
@@ -98,7 +126,8 @@ impl Parser {
         while let Some(token) = self.current_token() {
             if !token.can_start_top_level_statement() {
                 let found = Some(token.clone());
-                self.errors.push(Error::ExpectedRule { rule: "top level statement", found });
+                let location = self.current_location();
+                self.errors.push(Error::ExpectedRule { rule: "top level statement", found, location });
                 self.recover_to_next_top_level_statement();
 
                 // We can possibly skip to the end of input above but we're at a valid
@@ -207,25 +236,21 @@ impl Parser {
     fn parse_infix_expr(&mut self) -> Result<Expression, Error> {
         let expr = self.parse_call()?;
 
-        match self.current_token() {
-            Some(Token::Plus) => {
-                self.advance();
-                let function = Rc::new(Expression::Variable { name: "+".to_string() });
-                let lhs = Rc::new(expr);
-                let rhs = Rc::new(self.parse_call()?);
+        // `a + b` and `a - b` are represented as function calls: `(+) a b` and `(-) a b`
+        let operator = |this: &mut Self, name: &str, expr, location| -> Result<_, Error> {
+            this.advance();
+            let name = Identifier { name: Rc::new(name.into()), location };
+            let function = Rc::new(Expression::Variable { name });
+            let lhs = Rc::new(expr);
+            let rhs = Rc::new(this.parse_call()?);
 
-                let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs });
-                Ok(Expression::FunctionCall { function: call1, argument: rhs })
-            }
-            Some(Token::Minus) => {
-                self.advance();
-                let function = Rc::new(Expression::Variable { name: "-".to_string() });
-                let lhs = Rc::new(expr);
-                let rhs = Rc::new(self.parse_call()?);
+            let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs });
+            Ok(Expression::FunctionCall { function: call1, argument: rhs })
+        };
 
-                let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs });
-                Ok(Expression::FunctionCall { function: call1, argument: rhs })
-            }
+        match self.current_token_and_location() {
+            (Some(Token::Plus), location) => operator(self, "+", expr, location),
+            (Some(Token::Minus), location) => operator(self, "-", expr, location),
             _ => Ok(expr),
         }
     }
@@ -246,25 +271,26 @@ impl Parser {
 
     /// atom: name | integer | "(" expr ")"
     fn parse_atom(&mut self) -> Result<Expression, Error> {
-        match self.current_token() {
-            Some(Token::Name(name)) => {
-                let name = name.clone();
+        match self.current_token_and_location() {
+            (Some(Token::Name(name)), location) => {
+                let name = Rc::new(name.clone());
+                let name = Identifier { name, location };
                 self.advance();
                 Ok(Expression::Variable { name })
             }
-            Some(Token::Integer(x)) => {
+            (Some(Token::Integer(x)), _) => {
                 let x = *x;
                 self.advance();
                 Ok(Expression::IntegerLiteral(x))
             }
-            Some(Token::ParenLeft) => {
+            (Some(Token::ParenLeft), _) => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.expect(Token::ParenRight)?;
                 Ok(expr)
             }
-            other => {
-                Err(Error::ExpectedRule { rule: "an expression", found: other.cloned() })
+            (other, location) => {
+                Err(Error::ExpectedRule { rule: "an expression", found: other.cloned(), location })
             }
         }
     }
@@ -285,34 +311,40 @@ impl Parser {
 
     /// basic_type: "Int" | name | "(" type ")"
     fn parse_basic_type(&mut self) -> Result<Type, Error> {
-        match self.current_token() {
-            Some(Token::Int) => {
+        match self.current_token_and_location() {
+            (Some(Token::Int), _) => {
                 self.advance();
                 Ok(Type::Int)
             }
-            Some(Token::Name(name)) => {
-                let name = name.clone();
+            (Some(Token::Name(name)), location) => {
+                let name = Rc::new(name.clone());
+                let name = Identifier { name, location };
                 self.advance();
                 Ok(Type::Generic { name })
             }
-            Some(Token::ParenLeft) => {
+            (Some(Token::ParenLeft), _) => {
                 self.advance();
                 let typ = self.parse_type()?;
                 self.expect(Token::ParenRight)?;
                 Ok(typ)
             }
-            other => {
-                Err(Error::ExpectedRule { rule: "a type", found: other.cloned() })
+            (other, location) => {
+                Err(Error::ExpectedRule { rule: "a type", found: other.cloned(), location })
             }
         }
     }
 
-    fn parse_name(&mut self) -> Result<String, Error> {
-        match self.current_token() {
-            Some(Token::Name(name)) => Ok(name.clone()),
-            other => {
+    /// name: [a-zA-Z][a-zA-Z0-9]*
+    fn parse_name(&mut self) -> Result<Identifier, Error> {
+        match self.current_token_and_location() {
+            (Some(Token::Name(name)), location) => {
+                let name = Rc::new(name.clone());
+                self.advance();
+                Ok(Identifier { name, location })
+            }
+            (other, location) => {
                 let found = other.cloned();
-                Err(Error::ExpectedRule { rule: "a name", found })
+                Err(Error::ExpectedRule { rule: "a name", found, location })
             }
         }
     }
