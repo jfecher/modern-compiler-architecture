@@ -39,12 +39,13 @@ dependencies = [
 
 [[package]]
 name = "inc-complete"
-version = "0.3.1"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9402b20c2d52274e86ef5e6dfeae47ac2f917feea738369d91a4833a5c0ce99"
+checksum = "189b77499f5b9d3e2bf1c3856a6ed2f14ecd44766688e30687c2a5db52235e4b"
 dependencies = [
  "paste",
  "petgraph",
+ "serde",
 ]
 
 [[package]]
@@ -58,10 +59,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "itoa"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
+
+[[package]]
+name = "memchr"
+version = "2.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a282da65faaf38286cf3be983213fcf1d2e2a58700e808f83f4ea9a4804bc0"
+
+[[package]]
 name = "modern_compiler_architecture"
 version = "0.1.0"
 dependencies = [
  "inc-complete",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -80,6 +95,7 @@ dependencies = [
  "hashbrown",
  "indexmap",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -101,6 +117,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ryu"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28d3b2b1366ec20994f1fd18c3c594f05c5dd4bc44d8bb0c1c632c8d6829481f"
+
+[[package]]
 name = "serde"
 version = "1.0.219"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -118,6 +140,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "serde_json"
+version = "1.0.140"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20068b6e96dc6c9bd23e01df8827e6c7e1f2fddd43c21810382803c136b99373"
+dependencies = [
+ "itoa",
+ "memchr",
+ "ryu",
+ "serde",
 ]
 
 [[package]]

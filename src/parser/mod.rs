@@ -1,28 +1,77 @@
+//! This file contains the program's parser.
+//!
+//! It is a hand-written recursive descent parser which gives us more control over
+//! parser recovery. I've used handwritten recursive descent parsers, parser generators,
+//! and parser combinators in the past but always recommend hand-writing a recursive
+//! descent parser for compilers now. They can give you more control over error messages
+//! than parser generators, more control over recovery than parser generators and most
+//! parser combinators, and more control over performance than all of the above. They
+//! do tend to be more ad-hoc, but this lets us more easily implement less common features.
+//! For example, this parser assigns each expression a unique ID using an internal counter.
+//! Something as simple as this can be impossible with most parser generators or parser
+//! combinators which don't support monadic state.
+//!
+//! Notable features:
+//! - Concurrency: None. We parse a single source file top to bottom.
+//! - Incrementality: On each source file's Ast. We always re-parse an entire Ast
+//!   when the corresponding file changes, although the Ast after that point can
+//!   be split up into each top-level statement so that changes in one statement
+//!   do not affect another. See `parser/id.rs` for more information on how
+//!   top-level statements are identified as the same definition across multiple
+//!   compilations and changes to the source file.
+//! - Fault-tolerant: The parser should never fail to produce an Ast. This means
+//!   we return an Ast alongside any errors that occurred instead of returning
+//!   an Ast _or_ errors. Depending on the source program we may be more or less
+//!   successful on how useful the resulting Ast is though. For this example compiler
+//!   when a parse error occurs during a top-level statement we simply skip to the
+//!   next token in the input which may start a top-level statement. This may be
+//!   more difficult if your language doesn't have tokens dedicated to only starting
+//!   top-level statements like this example language does. Another good substitute
+//!   here would be if you have an error within a block delimited by some brackets: `{  }`
+//!   to skip to the ending bracket token `}` and try to continue from there. In
+//!   a more mature compiler, you'd expect to see many recover strategies. For example,
+//!   if we fail to parse a type we could log the error, create a default `Error` type, and skip
+//!   to either the next parameter or an `=` token, depending on the context we're
+//!   parsing the type in. The `Error` type (or more generally an `Error` node) is a good
+//!   general strategy for parser recovery when you have to return a valid Ast. You
+//!   can fill in your missing node with `Error` instead then use that to try to ignore
+//!   errors there in the future. For types this means if a type fails to parse you can
+//!   also filter out type errors with that error type since error types should always
+//!   correctly type check (and should be hidden from users).
 use std::rc::Rc;
 
 use ast::{Ast, Definition, Expression, Identifier, TopLevelStatement, Type};
+use ids::{ExprId, TopLevelId};
+use inc_complete::{Computation, DbHandle};
 
-use crate::{errors::{Error, Location, LocationData, Position}, lexer::tokens::Token};
+use crate::{errors::{Error, Location, LocationData, Position}, lexer::{self, tokens::Token}};
 
 pub mod ast;
+pub mod ids;
+mod ast_printer;
 
 struct Parser {
     tokens: Vec<(Token, Location)>,
     current_token_index: usize,
 
     file_name: Rc<String>,
-    errors: Vec<Error>
+    errors: Vec<Error>,
+
+    /// Each expression within a top-level statement receives a monotonically increasing
+    /// ExprId. This value starts at 0 and is reset in each top-level statement.
+    next_expr_id: u32,
 }
 
-pub fn parse(file_name: Rc<String>, tokens: Vec<(Token, Location)>) -> (Ast, Vec<Error>) {
-    let mut parser = Parser::new(file_name, tokens);
+pub fn parse_impl(file_name: &Rc<String>, db: &mut DbHandle<impl Computation>) -> (Ast, Vec<Error>) {
+    let tokens = lexer::lex_file(file_name.clone(), db);
+    let mut parser = Parser::new(file_name.clone(), tokens);
     let ast = parser.parse();
     (ast, parser.errors)
 }
 
 impl Parser {
     fn new(file_name: Rc<String>, tokens: Vec<(Token, Location)>) -> Self {
-        Parser { file_name, tokens, errors: Vec::new(), current_token_index: 0 }
+        Parser { file_name, tokens, errors: Vec::new(), current_token_index: 0, next_expr_id: 0 }
     }
 
     /// Returns the current token, or None if we've reached the end of input
@@ -69,6 +118,12 @@ impl Parser {
         } else {
             false
         }
+    }
+
+    fn next_expr_id(&mut self) -> ExprId {
+        let id = ExprId::new(self.next_expr_id);
+        self.next_expr_id += 1;
+        id
     }
 
     /// If the current token is the given token, advance the input.
@@ -154,6 +209,7 @@ impl Parser {
     ///
     /// top_level_statement: definition | import | print
     fn parse_top_level_statement(&mut self) -> Result<TopLevelStatement, Error> {
+        self.next_expr_id = 0;
         let token = self.current_token()
             .expect("`parse_top_level_statements` should ensure this method isn't called when we're at the end of input");
 
@@ -180,14 +236,19 @@ impl Parser {
         self.expect(Token::Equals)?;
         let body = Rc::new(self.parse_expr()?);
 
-        Ok(TopLevelStatement::Definition(Definition { name, typ, body }))
+        // TODO: Handle collisions
+        let id = TopLevelId::new_definition(&self.file_name, &name.name, 0);
+        Ok(TopLevelStatement::Definition(Definition { name, typ, body, id }))
     }
 
     /// import: "import" name
     fn parse_import(&mut self) -> Result<TopLevelStatement, Error> {
         self.expect(Token::Import)?;
         let file_name = self.parse_name()?;
-        Ok(TopLevelStatement::Import { file_name })
+
+        // TODO: Handle collisions
+        let id = TopLevelId::new_import(&self.file_name, &file_name.name, 0);
+        Ok(TopLevelStatement::Import { file_name, id })
     }
 
     /// print: "print" expr
@@ -224,7 +285,8 @@ impl Parser {
         let mut expr = body;
         for parameter_name in parameters.into_iter().rev() {
             let body = Rc::new(expr);
-            expr = Expression::Lambda { parameter_name, body };
+            let id = self.next_expr_id();
+            expr = Expression::Lambda { parameter_name, body, id };
         }
 
         Ok(expr)
@@ -237,20 +299,23 @@ impl Parser {
         let expr = self.parse_call()?;
 
         // `a + b` and `a - b` are represented as function calls: `(+) a b` and `(-) a b`
-        let operator = |this: &mut Self, name: &str, expr, location| -> Result<_, Error> {
+        let operator = |this: &mut Self, name: &str, expr| -> Result<_, Error> {
             this.advance();
-            let name = Identifier { name: Rc::new(name.into()), location };
-            let function = Rc::new(Expression::Variable { name });
+            let id = this.next_expr_id();
+            let name = Identifier { name: Rc::new(name.into()), id };
+            let function = Rc::new(Expression::Variable(name));
             let lhs = Rc::new(expr);
             let rhs = Rc::new(this.parse_call()?);
 
-            let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs });
-            Ok(Expression::FunctionCall { function: call1, argument: rhs })
+            let id = this.next_expr_id();
+            let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs, id });
+            let id = this.next_expr_id();
+            Ok(Expression::FunctionCall { function: call1, argument: rhs, id })
         };
 
-        match self.current_token_and_location() {
-            (Some(Token::Plus), location) => operator(self, "+", expr, location),
-            (Some(Token::Minus), location) => operator(self, "-", expr, location),
+        match self.current_token() {
+            Some(Token::Plus) => operator(self, "+", expr),
+            Some(Token::Minus) => operator(self, "-", expr),
             _ => Ok(expr),
         }
     }
@@ -263,7 +328,7 @@ impl Parser {
         while let Ok(argument) = self.parse_atom() {
             let function = Rc::new(atom);
             let argument = Rc::new(argument);
-            atom = Expression::FunctionCall { function, argument };
+            atom = Expression::FunctionCall { function, argument, id: self.next_expr_id() };
         }
 
         Ok(atom)
@@ -271,25 +336,26 @@ impl Parser {
 
     /// atom: name | integer | "(" expr ")"
     fn parse_atom(&mut self) -> Result<Expression, Error> {
-        match self.current_token_and_location() {
-            (Some(Token::Name(name)), location) => {
+        match self.current_token() {
+            Some(Token::Name(name)) => {
                 let name = Rc::new(name.clone());
-                let name = Identifier { name, location };
+                let name = Identifier { name, id: self.next_expr_id() };
                 self.advance();
-                Ok(Expression::Variable { name })
+                Ok(Expression::Variable(name))
             }
-            (Some(Token::Integer(x)), _) => {
+            Some(Token::Integer(x)) => {
                 let x = *x;
                 self.advance();
-                Ok(Expression::IntegerLiteral(x))
+                Ok(Expression::IntegerLiteral(x, self.next_expr_id()))
             }
-            (Some(Token::ParenLeft), _) => {
+            Some(Token::ParenLeft) => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.expect(Token::ParenRight)?;
                 Ok(expr)
             }
-            (other, location) => {
+            other => {
+                let location = self.current_location();
                 Err(Error::ExpectedRule { rule: "an expression", found: other.cloned(), location })
             }
         }
@@ -311,24 +377,25 @@ impl Parser {
 
     /// basic_type: "Int" | name | "(" type ")"
     fn parse_basic_type(&mut self) -> Result<Type, Error> {
-        match self.current_token_and_location() {
-            (Some(Token::Int), _) => {
+        match self.current_token() {
+            Some(Token::Int) => {
                 self.advance();
                 Ok(Type::Int)
             }
-            (Some(Token::Name(name)), location) => {
+            Some(Token::Name(name)) => {
                 let name = Rc::new(name.clone());
-                let name = Identifier { name, location };
+                let name = Identifier { name, id: self.next_expr_id() };
                 self.advance();
-                Ok(Type::Generic { name })
+                Ok(Type::Generic(name))
             }
-            (Some(Token::ParenLeft), _) => {
+            Some(Token::ParenLeft) => {
                 self.advance();
                 let typ = self.parse_type()?;
                 self.expect(Token::ParenRight)?;
                 Ok(typ)
             }
-            (other, location) => {
+            other => {
+                let location = self.current_location();
                 Err(Error::ExpectedRule { rule: "a type", found: other.cloned(), location })
             }
         }
@@ -336,14 +403,15 @@ impl Parser {
 
     /// name: [a-zA-Z][a-zA-Z0-9]*
     fn parse_name(&mut self) -> Result<Identifier, Error> {
-        match self.current_token_and_location() {
-            (Some(Token::Name(name)), location) => {
+        match self.current_token() {
+            Some(Token::Name(name)) => {
                 let name = Rc::new(name.clone());
                 self.advance();
-                Ok(Identifier { name, location })
+                Ok(Identifier { name, id: self.next_expr_id() })
             }
-            (other, location) => {
+            other => {
                 let found = other.cloned();
+                let location = self.current_location();
                 Err(Error::ExpectedRule { rule: "a name", found, location })
             }
         }

@@ -4,14 +4,14 @@ use crate::lexer::tokens::Token;
 
 pub type Location = Rc<LocationData>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LocationData {
     pub file_name: Rc<String>,
     pub start: Position,
     pub end: Position,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Position {
     pub byte_index: usize,
     pub line_number: u32,
@@ -24,6 +24,7 @@ impl Position {
     }
 }
 
+#[derive(PartialEq, Eq)]
 pub enum Error {
     /// Expected {expected} but found {found}
     ExpectedToken { expected: Token, found: Option<Token>, location: Location },
