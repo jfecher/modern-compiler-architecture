@@ -20,9 +20,8 @@
 //! - `src/errors.rs`: Defines each error used in the program as well as the `Location` struct
 //! - `src/incremental.rs`: Some plumbing for the inc-complete library which also defines
 //!   which functions we're caching the result of.
-use std::{fs::File, io::Read, rc::Rc};
-
-use incremental::{parse_db, Compiler, SourceFile};
+use std::{fs::File, io::{Read, Write}, rc::Rc};
+use incremental::{parse, set_source_file, Compiler};
 
 // All the compiler passes in order:
 mod lexer;
@@ -34,21 +33,73 @@ mod type_inference;
 mod errors;
 mod incremental;
 
+const INPUT_FILE: &str = "readme_example.ex";
+const METADATA_FILE: &str = "incremental_metadata.json";
+
+macro_rules! try_or_return {
+    ($expr:expr, $err:ident -> $( $message:tt )+) => {
+        match $expr {
+            Ok(x) => x,
+            Err($err) => {
+                println!($( $message )+);
+                return;
+            }
+        }
+    };
+}
+
+// Deserialize the compiler from our metadata file.
+// If we fail, just default to a fresh compiler with no cached compilations.
+fn make_compiler() -> Compiler {
+    let Ok(file) = File::open(METADATA_FILE) else {
+        return Compiler::default();
+    };
+
+    serde_json::from_reader(&file).unwrap_or_default()
+}
+
 fn main() {
+    let mut compiler = make_compiler();
+
     let mut source = String::new();
-    let mut file = File::open("readme_example.ex").unwrap();
-    file.read_to_string(&mut source).unwrap();
-    let file_name = Rc::new("readme_example.ex".to_string());
+    let mut file = try_or_return!(File::open(INPUT_FILE), error ->
+        "Failed to open `{INPUT_FILE}`:\n{error}");
 
-    let mut db = Compiler::new();
-    db.update_input(SourceFile(file_name.clone()), source);
+    try_or_return!(file.read_to_string(&mut source), error ->
+        "Failed to read from file `{INPUT_FILE}`:\n{error}");
 
-    let (ast, errors) = parse_db(file_name, &mut db);
+    let file_name = Rc::new(INPUT_FILE.to_string());
+
+    set_source_file(&file_name, source, &mut compiler);
+
+    println!("Passes Run:");
+    let (ast, errors) = parse(file_name, &mut compiler).clone();
+    println!("Compiler finished.\n");
 
     println!("{ast}\n\nerrors:");
     for error in errors {
         println!("  {}", error.message());
     }
 
-    let serialized = serde_json::to_string_pretty(&db);
+    if let Err(error) = write_metadata(compiler) {
+        println!("\n{error}");
+    }
+}
+
+/// This could be changed so that we only write if the metadata actually
+/// changed but to simplify things we just always write.
+fn write_metadata(compiler: Compiler) -> Result<(), String> {
+    let serialized = serde_json::to_string(&compiler).map_err(|error| {
+        format!("Failed to serialize database:\n{error}")
+    })?;
+
+    let serialized = serialized.into_bytes();
+
+    let mut metadata_file = File::create(METADATA_FILE).map_err(|error| {
+        format!("Failed to create file `{METADATA_FILE}`:\n{error}")
+    })?;
+
+    metadata_file.write_all(&serialized).map_err(|error| {
+        format!("Failed to write to file `{METADATA_FILE}`:\n{error}")
+    })
 }

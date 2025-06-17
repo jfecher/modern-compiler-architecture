@@ -1,7 +1,7 @@
-use super::ast::{Ast, Definition, Expression, Identifier, TopLevelStatement, Type};
+use super::ast::{Definition, Expression, Identifier, Program, TopLevelStatement, Type};
 
 
-impl std::fmt::Display for Ast {
+impl std::fmt::Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, statement) in self.statements.iter().enumerate() {
             if i != 0 {

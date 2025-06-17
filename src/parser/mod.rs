@@ -40,11 +40,10 @@
 //!   correctly type check (and should be hidden from users).
 use std::rc::Rc;
 
-use ast::{Ast, Definition, Expression, Identifier, TopLevelStatement, Type};
+use ast::{Ast, Definition, Expression, Identifier, Program, TopLevelStatement, Type};
 use ids::{ExprId, TopLevelId};
-use inc_complete::{Computation, DbHandle};
 
-use crate::{errors::{Error, Location, LocationData, Position}, lexer::{self, tokens::Token}};
+use crate::{errors::{Error, Location, LocationData, Position}, incremental::{CompilerHandle, Parse}, lexer::{self, tokens::Token}};
 
 pub mod ast;
 pub mod ids;
@@ -62,11 +61,13 @@ struct Parser {
     next_expr_id: u32,
 }
 
-pub fn parse_impl(file_name: &Rc<String>, db: &mut DbHandle<impl Computation>) -> (Ast, Vec<Error>) {
-    let tokens = lexer::lex_file(file_name.clone(), db);
-    let mut parser = Parser::new(file_name.clone(), tokens);
+pub fn parse_impl(params: &Parse, db: &mut CompilerHandle) -> (Ast, Vec<Error>) {
+    println!("Parsing {}", params.file_name);
+
+    let tokens = lexer::lex_file(params.file_name.clone(), db);
+    let mut parser = Parser::new(params.file_name.clone(), tokens);
     let ast = parser.parse();
-    (ast, parser.errors)
+    (Rc::new(ast), parser.errors)
 }
 
 impl Parser {
@@ -134,7 +135,8 @@ impl Parser {
         } else {
             let (actual, location) = self.current_token_and_location();
             let actual = actual.cloned();
-            Err(Error::ExpectedToken { expected: token, found: actual, location })
+            let rule = format!("`{token}`");
+            Err(Error::ParserExpected { rule, found: actual, location })
         }
     }
 
@@ -150,17 +152,18 @@ impl Parser {
     }
 
     /// Parse the program!
-    fn parse(&mut self) -> Ast {
+    fn parse(&mut self) -> Program {
         let statements = self.parse_top_level_statements();
 
         if !self.current_token().is_none() {
             // We have unparsed input
             let (found, location) = self.current_token_and_location();
             let found = found.cloned();
-            self.errors.push(Error::ExpectedRule { rule: "top level statement", found, location });
+            let rule = "top level statement".to_string();
+            self.errors.push(Error::ParserExpected { rule, found, location });
         }
 
-        Ast { statements  }
+        Program { statements  }
     }
 
     /// Recovers to the next top level statement (or the end of input)
@@ -182,7 +185,8 @@ impl Parser {
             if !token.can_start_top_level_statement() {
                 let found = Some(token.clone());
                 let location = self.current_location();
-                self.errors.push(Error::ExpectedRule { rule: "top level statement", found, location });
+                let rule = "top level statement".to_string();
+                self.errors.push(Error::ParserExpected { rule, found, location });
                 self.recover_to_next_top_level_statement();
 
                 // We can possibly skip to the end of input above but we're at a valid
@@ -356,7 +360,8 @@ impl Parser {
             }
             other => {
                 let location = self.current_location();
-                Err(Error::ExpectedRule { rule: "an expression", found: other.cloned(), location })
+                let rule = "an expression".to_string();
+                Err(Error::ParserExpected { rule, found: other.cloned(), location })
             }
         }
     }
@@ -396,7 +401,8 @@ impl Parser {
             }
             other => {
                 let location = self.current_location();
-                Err(Error::ExpectedRule { rule: "a type", found: other.cloned(), location })
+                let rule = "a type".to_string();
+                Err(Error::ParserExpected { rule, found: other.cloned(), location })
             }
         }
     }
@@ -412,7 +418,8 @@ impl Parser {
             other => {
                 let found = other.cloned();
                 let location = self.current_location();
-                Err(Error::ExpectedRule { rule: "a name", found, location })
+                let rule = "a name".to_string();
+                Err(Error::ParserExpected { rule, found, location })
             }
         }
     }

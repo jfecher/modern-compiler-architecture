@@ -1,13 +1,17 @@
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
+
 use super::ids::{ExprId, TopLevelId};
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Ast {
+pub type Ast = Rc<Program>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Program {
     pub statements: Vec<TopLevelStatement>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TopLevelStatement {
     Import { file_name: Identifier, id: TopLevelId },
     Definition(Definition),
@@ -19,13 +23,13 @@ pub enum TopLevelStatement {
     Print(Rc<Expression>),
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identifier {
     pub name: Rc<String>,
     pub id: ExprId,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Definition {
     pub name: Identifier,
     pub typ: Option<Type>,
@@ -33,7 +37,7 @@ pub struct Definition {
     pub id: TopLevelId,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Expression {
     IntegerLiteral(i64, ExprId),
     Variable(Identifier),
@@ -41,7 +45,7 @@ pub enum Expression {
     Lambda { parameter_name: Identifier, body: Rc<Expression>, id: ExprId },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
     Int,
     Generic(Identifier),

@@ -1,14 +1,12 @@
 use std::{rc::Rc, str::CharIndices};
-
-use inc_complete::{Computation, DbHandle};
 use tokens::Token;
 
-use crate::{errors::{Location, LocationData, Position}, incremental::get_source_file};
+use crate::{errors::{Location, LocationData, Position}, incremental::{get_source_file, CompilerHandle}};
 
 pub mod tokens;
 
 /// Lex an entire file, returning a vector of tokens in the file
-pub fn lex_file(file_name: Rc<String>, db: &mut DbHandle<impl Computation>) -> Vec<(Token, Location)> {
+pub fn lex_file(file_name: Rc<String>, db: &mut CompilerHandle) -> Vec<(Token, Location)> {
     let source_file_text = get_source_file(file_name.clone(), db);
     let lexer = Lexer::new(source_file_text, file_name);
     // Calls `self.next()` until it returns `None`, collecting

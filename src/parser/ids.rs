@@ -1,5 +1,7 @@
 use std::hash::Hasher;
 
+use serde::{Deserialize, Serialize};
+
 
 /// A `TopLevelId` is a 64-bit hash uniquely identifying a particular
 /// `TopLevelStatement` node. Since these are attached to each node, and we cache
@@ -18,7 +20,7 @@ use std::hash::Hasher;
 ///
 /// Since the Ast is immutable, this id is also used to assicate additional
 /// data with an Ast including its Location, and later on its Type.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TopLevelId(u64);
 
 impl TopLevelId {
@@ -69,7 +71,7 @@ fn hash(x: impl std::hash::Hash) -> TopLevelId {
 /// Since the Ast is immutable, these ExprIds are used to associate more data with
 /// a particular node. For example, name resolution fills out any links to definitions,
 /// and type inference associates a type with every ExprId.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExprId(u32);
 
 impl ExprId {

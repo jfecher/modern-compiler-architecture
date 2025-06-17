@@ -39,11 +39,10 @@ dependencies = [
 
 [[package]]
 name = "inc-complete"
-version = "0.3.4"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "189b77499f5b9d3e2bf1c3856a6ed2f14ecd44766688e30687c2a5db52235e4b"
+checksum = "45235a9237859383a14d4f1e4421f6b5a5947f00155f9c40e3e9651ce893efdd"
 dependencies = [
- "paste",
  "petgraph",
  "serde",
 ]
@@ -78,12 +77,6 @@ dependencies = [
  "serde",
  "serde_json",
 ]
-
-[[package]]
-name = "paste"
-version = "1.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "petgraph"

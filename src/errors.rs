@@ -1,17 +1,19 @@
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
+
 use crate::lexer::tokens::Token;
 
 pub type Location = Rc<LocationData>;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationData {
     pub file_name: Rc<String>,
     pub start: Position,
     pub end: Position,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Position {
     pub byte_index: usize,
     pub line_number: u32,
@@ -24,23 +26,16 @@ impl Position {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Error {
-    /// Expected {expected} but found {found}
-    ExpectedToken { expected: Token, found: Option<Token>, location: Location },
-
     /// Expected {rule} but found {found}
-    ExpectedRule { rule: &'static str, found: Option<Token>, location: Location },
+    ParserExpected { rule: String, found: Option<Token>, location: Location },
 }
 
 impl Error {
     pub fn message(&self) -> String {
         match self {
-            Error::ExpectedToken { expected, found, location: _ } => {
-                let found = found.as_ref().map_or("(end of input)".to_string(), ToString::to_string);
-                format!("Expected `{expected}` but found `{found}`")
-            }
-            Error::ExpectedRule { rule, found, location: _ } => {
+            Error::ParserExpected { rule, found, location: _ } => {
                 let found = found.as_ref().map_or("(end of input)".to_string(), ToString::to_string);
                 format!("Expected {rule} but found `{found}`")
             },
