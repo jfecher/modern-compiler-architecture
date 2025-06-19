@@ -1,0 +1,1 @@
+def add10 = fn x -> x + 10

@@ -38,16 +38,21 @@
 //!   errors there in the future. For types this means if a type fails to parse you can
 //!   also filter out type errors with that error type since error types should always
 //!   correctly type check (and should be hidden from users).
-use std::rc::Rc;
+use std::{collections::BTreeMap, rc::Rc};
 
 use ast::{Ast, Definition, Expression, Identifier, Program, TopLevelStatement, Type};
 use ids::{ExprId, TopLevelId};
+use serde::{Deserialize, Serialize};
 
-use crate::{errors::{Error, Location, LocationData, Position}, incremental::{CompilerHandle, Parse}, lexer::{self, tokens::Token}};
+use crate::{
+    errors::{Error, Errors, Location, LocationData, Position},
+    incremental::{CompilerHandle, Parse},
+    lexer::{self, tokens::Token},
+};
 
 pub mod ast;
-pub mod ids;
 mod ast_printer;
+pub mod ids;
 
 struct Parser {
     tokens: Vec<(Token, Location)>,
@@ -59,20 +64,51 @@ struct Parser {
     /// Each expression within a top-level statement receives a monotonically increasing
     /// ExprId. This value starts at 0 and is reset in each top-level statement.
     next_expr_id: u32,
+
+    /// Each ExprId is only valid within the context of a TopLevelId, so this will
+    /// need to go inside `top_level_data` when we are finished with the current top
+    /// level item. Until then it is easier to have this separate so that we do not need
+    /// a TopLevelId to push an expression's location.
+    expr_locations: BTreeMap<ExprId, Location>,
+
+    top_level_data: BTreeMap<TopLevelId, TopLevelMetaData>,
 }
 
-pub fn parse_impl(params: &Parse, db: &mut CompilerHandle) -> (Ast, Vec<Error>) {
-    println!("Parsing {}", params.file_name);
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ParserResult {
+    pub ast: Ast,
+    pub errors: Errors,
+    pub top_level_data: BTreeMap<TopLevelId, TopLevelMetaData>,
+}
+
+/// Additional metadata on a TopLevelStatement
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TopLevelMetaData {
+    pub location: Location,
+    pub expr_locations: BTreeMap<ExprId, Location>,
+}
+
+pub fn parse_impl(params: &Parse, db: &mut CompilerHandle) -> ParserResult {
+    println!("- Parsing {}", params.file_name);
 
     let tokens = lexer::lex_file(params.file_name.clone(), db);
     let mut parser = Parser::new(params.file_name.clone(), tokens);
     let ast = parser.parse();
-    (Rc::new(ast), parser.errors)
+
+    ParserResult { ast: Rc::new(ast), errors: parser.errors, top_level_data: parser.top_level_data }
 }
 
 impl Parser {
     fn new(file_name: Rc<String>, tokens: Vec<(Token, Location)>) -> Self {
-        Parser { file_name, tokens, errors: Vec::new(), current_token_index: 0, next_expr_id: 0 }
+        Parser {
+            file_name,
+            tokens,
+            errors: Vec::new(),
+            current_token_index: 0,
+            next_expr_id: 0,
+            top_level_data: BTreeMap::new(),
+            expr_locations: BTreeMap::new(),
+        }
     }
 
     /// Returns the current token, or None if we've reached the end of input
@@ -93,8 +129,8 @@ impl Parser {
                     let position = Position::start();
                     let file_name = self.file_name.clone();
                     Rc::new(LocationData { file_name, start: position, end: position })
-                }
-            }
+                },
+            },
         }
     }
 
@@ -121,9 +157,11 @@ impl Parser {
         }
     }
 
-    fn next_expr_id(&mut self) -> ExprId {
+    /// Creates a new ExprId and stores the given Location at that id
+    fn next_expr_id(&mut self, location: Location) -> ExprId {
         let id = ExprId::new(self.next_expr_id);
         self.next_expr_id += 1;
+        self.expr_locations.insert(id, location);
         id
     }
 
@@ -163,7 +201,7 @@ impl Parser {
             self.errors.push(Error::ParserExpected { rule, found, location });
         }
 
-        Program { statements  }
+        Program { statements }
     }
 
     /// Recovers to the next top level statement (or the end of input)
@@ -201,7 +239,7 @@ impl Parser {
                 Err(error) => {
                     self.errors.push(error);
                     self.recover_to_next_top_level_statement();
-                }
+                },
             }
         }
 
@@ -214,8 +252,9 @@ impl Parser {
     /// top_level_statement: definition | import | print
     fn parse_top_level_statement(&mut self) -> Result<TopLevelStatement, Error> {
         self.next_expr_id = 0;
-        let token = self.current_token()
-            .expect("`parse_top_level_statements` should ensure this method isn't called when we're at the end of input");
+        let token = self.current_token().expect(
+            "`parse_top_level_statements` should ensure this method isn't called when we're at the end of input",
+        );
 
         assert!(token.can_start_top_level_statement());
 
@@ -223,13 +262,24 @@ impl Parser {
             Token::Def => self.parse_definition(),
             Token::Import => self.parse_import(),
             Token::Print => self.parse_print(),
-            _ => unreachable!("parse_top_level_statement should only be called on a token which may start a top_level_statement"),
+            _ => unreachable!(
+                "parse_top_level_statement should only be called on a token which may start a top_level_statement"
+            ),
         }
+    }
+
+    /// Stores the location of a TopLevelItem, as well as the location and information
+    /// of any ExprIds within this item.
+    fn store_top_level_metadata(&mut self, id: TopLevelId, location: Location) {
+        let meta = TopLevelMetaData { location, expr_locations: std::mem::take(&mut self.expr_locations) };
+        self.top_level_data.insert(id.clone(), meta);
     }
 
     /// definition: "def" name (":" type)? "=" expr
     fn parse_definition(&mut self) -> Result<TopLevelStatement, Error> {
+        let start = self.current_location();
         self.expect(Token::Def)?;
+
         let name = self.parse_name()?;
 
         let mut typ = None;
@@ -241,38 +291,54 @@ impl Parser {
         let body = Rc::new(self.parse_expr()?);
 
         // TODO: Handle collisions
-        let id = TopLevelId::new_definition(&self.file_name, &name.name, 0);
+        let id = TopLevelId::new_definition(self.file_name.clone(), &name.name, 0);
+        let location = start.to(&self.current_location());
+        self.store_top_level_metadata(id.clone(), location);
+
         Ok(TopLevelStatement::Definition(Definition { name, typ, body, id }))
     }
 
     /// import: "import" name
     fn parse_import(&mut self) -> Result<TopLevelStatement, Error> {
+        let start = self.current_location();
         self.expect(Token::Import)?;
-        let file_name = self.parse_name()?;
+        let mut file_name = self.parse_name()?;
+
+        // Hack: Adding the .ex suffix here lets us share this suffix in the Rc
+        // much more easily without having to cache it and add code to translate between
+        // the module name and the file name everywhere else.
+        file_name.name = Rc::new(format!("{}.ex", file_name.name));
 
         // TODO: Handle collisions
-        let id = TopLevelId::new_import(&self.file_name, &file_name.name, 0);
+        let id = TopLevelId::new_import(self.file_name.clone(), &file_name.name, 0);
+        let location = start.to(&self.current_location());
+        self.store_top_level_metadata(id.clone(), location);
+
         Ok(TopLevelStatement::Import { file_name, id })
     }
 
     /// print: "print" expr
     fn parse_print(&mut self) -> Result<TopLevelStatement, Error> {
+        let start = self.current_location();
         self.expect(Token::Print)?;
         let expr = self.parse_expr()?;
-        Ok(TopLevelStatement::Print(Rc::new(expr)))
+        let location = start.to(&self.current_location());
+
+        // TODO: Handle collisions
+        let id = TopLevelId::new_print(self.file_name.clone(), &expr, 0);
+        self.store_top_level_metadata(id.clone(), location);
+
+        Ok(TopLevelStatement::Print(Rc::new(expr), id))
     }
 
     /// expr: lambda | infix_expr
     fn parse_expr(&mut self) -> Result<Expression, Error> {
-        if self.current_token() == Some(&Token::Fn) {
-            self.parse_lambda()
-        } else {
-            self.parse_infix_expr()
-        }
+        if self.current_token() == Some(&Token::Fn) { self.parse_lambda() } else { self.parse_infix_expr() }
     }
 
     /// lambda: "fn" name+ "->" expr
     fn parse_lambda(&mut self) -> Result<Expression, Error> {
+        let start = self.current_location();
         self.expect(Token::Fn)?;
         let mut parameters = vec![self.parse_name()?];
 
@@ -283,13 +349,14 @@ impl Parser {
 
         self.expect(Token::RightArrow)?;
         let body = self.parse_expr()?;
+        let location = start.to(&self.current_location());
 
         // Lambdas with more than one parameter are desugared into nested lambdas
         // each with exactly one parameter
         let mut expr = body;
         for parameter_name in parameters.into_iter().rev() {
             let body = Rc::new(expr);
-            let id = self.next_expr_id();
+            let id = self.next_expr_id(location.clone());
             expr = Expression::Lambda { parameter_name, body, id };
         }
 
@@ -300,20 +367,24 @@ impl Parser {
     ///     | expr - call
     ///     | call
     fn parse_infix_expr(&mut self) -> Result<Expression, Error> {
+        let start = self.current_location();
         let expr = self.parse_call()?;
 
         // `a + b` and `a - b` are represented as function calls: `(+) a b` and `(-) a b`
         let operator = |this: &mut Self, name: &str, expr| -> Result<_, Error> {
+            let operator_location = this.current_location();
             this.advance();
-            let id = this.next_expr_id();
+            let id = this.next_expr_id(operator_location);
             let name = Identifier { name: Rc::new(name.into()), id };
+
             let function = Rc::new(Expression::Variable(name));
             let lhs = Rc::new(expr);
             let rhs = Rc::new(this.parse_call()?);
+            let call_location = start.to(&this.current_location());
 
-            let id = this.next_expr_id();
+            let id = this.next_expr_id(call_location.clone());
             let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs, id });
-            let id = this.next_expr_id();
+            let id = this.next_expr_id(call_location);
             Ok(Expression::FunctionCall { function: call1, argument: rhs, id })
         };
 
@@ -327,12 +398,14 @@ impl Parser {
     /// call: call atom
     ///     | atom
     fn parse_call(&mut self) -> Result<Expression, Error> {
+        let start = self.current_location();
         let mut atom = self.parse_atom()?;
 
         while let Ok(argument) = self.parse_atom() {
             let function = Rc::new(atom);
             let argument = Rc::new(argument);
-            atom = Expression::FunctionCall { function, argument, id: self.next_expr_id() };
+            let location = start.to(&self.current_location());
+            atom = Expression::FunctionCall { function, argument, id: self.next_expr_id(location) };
         }
 
         Ok(atom)
@@ -340,29 +413,28 @@ impl Parser {
 
     /// atom: name | integer | "(" expr ")"
     fn parse_atom(&mut self) -> Result<Expression, Error> {
-        match self.current_token() {
-            Some(Token::Name(name)) => {
+        match self.current_token_and_location() {
+            (Some(Token::Name(name)), location) => {
                 let name = Rc::new(name.clone());
-                let name = Identifier { name, id: self.next_expr_id() };
+                let name = Identifier { name, id: self.next_expr_id(location) };
                 self.advance();
                 Ok(Expression::Variable(name))
-            }
-            Some(Token::Integer(x)) => {
+            },
+            (Some(Token::Integer(x)), location) => {
                 let x = *x;
                 self.advance();
-                Ok(Expression::IntegerLiteral(x, self.next_expr_id()))
-            }
-            Some(Token::ParenLeft) => {
+                Ok(Expression::IntegerLiteral(x, self.next_expr_id(location)))
+            },
+            (Some(Token::ParenLeft), _) => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 self.expect(Token::ParenRight)?;
                 Ok(expr)
-            }
-            other => {
-                let location = self.current_location();
+            },
+            (other, location) => {
                 let rule = "an expression".to_string();
                 Err(Error::ParserExpected { rule, found: other.cloned(), location })
-            }
+            },
         }
     }
 
@@ -375,7 +447,7 @@ impl Parser {
             let parameter = Rc::new(typ);
             let return_type = Rc::new(self.parse_type()?);
             Ok(Type::Function { parameter, return_type })
-        }  else {
+        } else {
             Ok(typ)
         }
     }
@@ -386,41 +458,41 @@ impl Parser {
             Some(Token::Int) => {
                 self.advance();
                 Ok(Type::Int)
-            }
+            },
             Some(Token::Name(name)) => {
                 let name = Rc::new(name.clone());
-                let name = Identifier { name, id: self.next_expr_id() };
+                let location = self.current_location();
+                let name = Identifier { name, id: self.next_expr_id(location) };
                 self.advance();
                 Ok(Type::Generic(name))
-            }
+            },
             Some(Token::ParenLeft) => {
                 self.advance();
                 let typ = self.parse_type()?;
                 self.expect(Token::ParenRight)?;
                 Ok(typ)
-            }
+            },
             other => {
                 let location = self.current_location();
                 let rule = "a type".to_string();
                 Err(Error::ParserExpected { rule, found: other.cloned(), location })
-            }
+            },
         }
     }
 
     /// name: [a-zA-Z][a-zA-Z0-9]*
     fn parse_name(&mut self) -> Result<Identifier, Error> {
-        match self.current_token() {
-            Some(Token::Name(name)) => {
+        match self.current_token_and_location() {
+            (Some(Token::Name(name)), location) => {
                 let name = Rc::new(name.clone());
                 self.advance();
-                Ok(Identifier { name, id: self.next_expr_id() })
-            }
-            other => {
+                Ok(Identifier { name, id: self.next_expr_id(location) })
+            },
+            (other, location) => {
                 let found = other.cloned();
-                let location = self.current_location();
                 let rule = "a name".to_string();
                 Err(Error::ParserExpected { rule, found, location })
-            }
+            },
         }
     }
 }

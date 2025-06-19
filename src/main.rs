@@ -20,13 +20,20 @@
 //! - `src/errors.rs`: Defines each error used in the program as well as the `Location` struct
 //! - `src/incremental.rs`: Some plumbing for the inc-complete library which also defines
 //!   which functions we're caching the result of.
-use std::{fs::File, io::{Read, Write}, rc::Rc};
-use incremental::{parse, set_source_file, Compiler};
+use incremental::{Compiler, set_source_file};
+use std::{
+    collections::{HashSet, VecDeque},
+    fs::File,
+    io::{Read, Write},
+    rc::Rc,
+};
+
+use crate::errors::{Error, Errors};
 
 // All the compiler passes in order:
 mod lexer;
-mod parser;
 mod name_resolution;
+mod parser;
 mod type_inference;
 
 // Util modules:
@@ -34,49 +41,41 @@ mod errors;
 mod incremental;
 
 const INPUT_FILE: &str = "readme_example.ex";
-const METADATA_FILE: &str = "incremental_metadata.json";
-
-macro_rules! try_or_return {
-    ($expr:expr, $err:ident -> $( $message:tt )+) => {
-        match $expr {
-            Ok(x) => x,
-            Err($err) => {
-                println!($( $message )+);
-                return;
-            }
-        }
-    };
-}
+const METADATA_FILE: &str = "incremental_metadata.ron";
 
 // Deserialize the compiler from our metadata file.
 // If we fail, just default to a fresh compiler with no cached compilations.
 fn make_compiler() -> Compiler {
-    let Ok(file) = File::open(METADATA_FILE) else {
+    let Ok(text) = read_file(METADATA_FILE) else {
         return Compiler::default();
     };
 
-    serde_json::from_reader(&file).unwrap_or_default()
+    ron::from_str(&text).unwrap_or_default()
 }
 
 fn main() {
     let mut compiler = make_compiler();
 
-    let mut source = String::new();
-    let mut file = try_or_return!(File::open(INPUT_FILE), error ->
-        "Failed to open `{INPUT_FILE}`:\n{error}");
-
-    try_or_return!(file.read_to_string(&mut source), error ->
-        "Failed to read from file `{INPUT_FILE}`:\n{error}");
+    let Ok(source) = read_file(INPUT_FILE) else { return };
 
     let file_name = Rc::new(INPUT_FILE.to_string());
-
     set_source_file(&file_name, source, &mut compiler);
 
     println!("Passes Run:");
-    let (ast, errors) = parse(file_name, &mut compiler).clone();
+
+    // First, run through our input file and any imports recursively to find any
+    // files which have changed. These are the imports to our incremental compilation
+    // so we can't dynamically update our inputs within another query. Instead, we
+    // can query to collect them all and update them here at top-level.
+    let mut errors = collect_all_changed_files(file_name.clone(), &mut compiler);
+
+    let (definitions, more_errors) = incremental::get_globally_visible_definitions(file_name, &mut compiler);
+    errors.extend(more_errors.iter().cloned());
+
+    // let (ast, errors) = compiler.get(Parse { file_name }).clone();
     println!("Compiler finished.\n");
 
-    println!("{ast}\n\nerrors:");
+    println!("Visible definitions: {}\n\nerrors:", definitions.len());
     for error in errors {
         println!("  {}", error.message());
     }
@@ -86,20 +85,57 @@ fn main() {
     }
 }
 
+fn collect_all_changed_files(start_file: Rc<String>, compiler: &mut Compiler) -> Errors {
+    // We expect `compiler.update_input` to already be called for start_file.
+    // Reason being is that we can't start with `start_file` in our queue because
+    // it is the only file without a source location for the import, because there was no import.
+    let imports = incremental::get_imports(start_file, compiler);
+
+    let mut queue = imports.iter().cloned().collect::<VecDeque<_>>();
+
+    let mut finished = HashSet::new();
+    let mut errors = Vec::new();
+
+    while let Some((file, location)) = queue.pop_front() {
+        if finished.contains(&file) {
+            continue;
+        }
+        finished.insert(file.clone());
+
+        let text = read_file(&file).unwrap_or_else(|_| {
+            errors.push(Error::UnknownImportFile { file_name: file.clone(), location });
+
+            // Treat file as an empty string. This will probably just lead to more errors but does let us continue
+            // to collect name/type errors for other files
+            String::new()
+        });
+        set_source_file(&file, text, compiler);
+
+        let imports = incremental::get_imports(file, compiler);
+        queue.extend(imports.iter().cloned());
+    }
+
+    errors
+}
+
 /// This could be changed so that we only write if the metadata actually
 /// changed but to simplify things we just always write.
 fn write_metadata(compiler: Compiler) -> Result<(), String> {
-    let serialized = serde_json::to_string(&compiler).map_err(|error| {
-        format!("Failed to serialize database:\n{error}")
-    })?;
+    let serialized = ron::to_string(&compiler).map_err(|error| format!("Failed to serialize database:\n{error}"))?;
 
     let serialized = serialized.into_bytes();
 
-    let mut metadata_file = File::create(METADATA_FILE).map_err(|error| {
-        format!("Failed to create file `{METADATA_FILE}`:\n{error}")
-    })?;
+    let mut metadata_file =
+        File::create(METADATA_FILE).map_err(|error| format!("Failed to create file `{METADATA_FILE}`:\n{error}"))?;
 
-    metadata_file.write_all(&serialized).map_err(|error| {
-        format!("Failed to write to file `{METADATA_FILE}`:\n{error}")
-    })
+    metadata_file.write_all(&serialized).map_err(|error| format!("Failed to write to file `{METADATA_FILE}`:\n{error}"))
+}
+
+fn read_file(file_name: &str) -> Result<String, String> {
+    let mut file = File::open(file_name).map_err(|error| format!("Failed to open `{INPUT_FILE}`:\n{error}"))?;
+
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(|error| format!("Failed to read from file `{INPUT_FILE}`:\n{error}"))?;
+
+    Ok(text)
 }

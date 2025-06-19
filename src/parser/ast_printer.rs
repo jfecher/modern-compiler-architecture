@@ -1,6 +1,5 @@
 use super::ast::{Definition, Expression, Identifier, Program, TopLevelStatement, Type};
 
-
 impl std::fmt::Display for Program {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (i, statement) in self.statements.iter().enumerate() {
@@ -22,7 +21,7 @@ impl std::fmt::Display for TopLevelStatement {
             TopLevelStatement::Definition(definition) => {
                 write!(f, "{definition}")
             },
-            TopLevelStatement::Print(expression) => {
+            TopLevelStatement::Print(expression, _id) => {
                 write!(f, "print {expression}")
             },
         }
@@ -48,9 +47,8 @@ impl std::fmt::Display for Definition {
 
 impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let should_parenthesize = |expr: &Expression| {
-            matches!(expr, Expression::FunctionCall { .. } | Expression::Lambda { .. })
-        };
+        let should_parenthesize =
+            |expr: &Expression| matches!(expr, Expression::FunctionCall { .. } | Expression::Lambda { .. });
 
         match self {
             Expression::IntegerLiteral(x, _id) => write!(f, "{x}"),
@@ -62,11 +60,7 @@ impl std::fmt::Display for Expression {
                     write!(f, "{function}")?;
                 }
 
-                if should_parenthesize(&argument) {
-                    write!(f, " ({argument})")
-                } else {
-                    write!(f, " {argument}")
-                }
+                if should_parenthesize(&argument) { write!(f, " ({argument})") } else { write!(f, " {argument}") }
             },
             Expression::Lambda { parameter_name, body, id: _ } => {
                 write!(f, "fn {parameter_name} -> {body}")
@@ -86,7 +80,7 @@ impl std::fmt::Display for Type {
                 } else {
                     write!(f, "{parameter} -> {return_type}")
                 }
-            }
+            },
         }
     }
 }

@@ -15,15 +15,10 @@ pub struct Program {
 pub enum TopLevelStatement {
     Import { file_name: Identifier, id: TopLevelId },
     Definition(Definition),
-
-    /// Print statements don't take a top-level id simply because we never
-    /// need any more associated data for them.
-    /// - Their type? Always `Unit`
-    /// - Their location? We never happen to issue errors for them. In a real compiler we likely would.
-    Print(Rc<Expression>),
+    Print(Rc<Expression>, TopLevelId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identifier {
     pub name: Rc<String>,
     pub id: ExprId,
@@ -37,7 +32,7 @@ pub struct Definition {
     pub id: TopLevelId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Expression {
     IntegerLiteral(i64, ExprId),
     Variable(Identifier),
