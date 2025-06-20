@@ -3,8 +3,7 @@ use std::rc::Rc;
 use crate::{
     errors::{Error, Errors, Location},
     incremental::{
-        CompilerHandle, Definitions, ExportedDefinitions, GetImports, VisibleDefinitions, get_exported_definitions,
-        parse, parse_cloned,
+        self, get_exported_definitions, parse, parse_cloned, CompilerHandle, Definitions, ExportedDefinitions, GetImports, VisibleDefinitions
     },
     parser::ast::TopLevelStatement,
 };
@@ -12,7 +11,8 @@ use crate::{
 /// Collect all definitions which should be visible to expressions within this file.
 /// This includes all top-level definitions within this file, as well as any imported ones.
 pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &mut CompilerHandle) -> (Definitions, Errors) {
-    println!("- Collecting visible definitions in {}", context.file_name);
+    incremental::enter_query();
+    incremental::println(format!("Collecting visible definitions in {}", context.file_name));
 
     let (mut definitions, mut errors) = get_exported_definitions(context.file_name.clone(), db).clone();
 
@@ -40,13 +40,15 @@ pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &mut CompilerH
         }
     }
 
+    incremental::exit_query();
     (definitions, errors)
 }
 
 /// Collect only the exported definitions within a file.
 /// For this small example language, this is all top-level definitions in a file, except for imported ones.
 pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &mut CompilerHandle) -> (Definitions, Errors) {
-    println!("- Collecting exported definitions in {}", context.file_name);
+    incremental::enter_query();
+    incremental::println(format!("Collecting exported definitions in {}", context.file_name));
 
     let (ast, mut errors) = parse_cloned(context.file_name.clone(), db);
     let mut definitions = Definitions::default();
@@ -65,12 +67,14 @@ pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &mut Compile
         }
     }
 
+    incremental::exit_query();
     (definitions, errors)
 }
 
 /// Collects the file names of all imports within this file.
 pub fn get_imports_impl(context: &GetImports, db: &mut CompilerHandle) -> Vec<(Rc<String>, Location)> {
-    println!("- Collecting imports of {}", context.file_name);
+    incremental::enter_query();
+    incremental::println(format!("Collecting imports of {}", context.file_name));
 
     // Ignore parse errors for now, we can report them later
     let ast = parse(context.file_name.clone(), db).0.clone();
@@ -87,5 +91,6 @@ pub fn get_imports_impl(context: &GetImports, db: &mut CompilerHandle) -> Vec<(R
         }
     }
 
+    incremental::exit_query();
     imports
 }

@@ -24,10 +24,11 @@ pub mod types;
 /// if the other definition provides a type annotation. Without type annotations the two
 /// functions should be mostly equivalent.
 pub fn get_type_impl(context: &GetType, compiler: &mut CompilerHandle) -> TopLevelDefinitionType {
+    incremental::enter_query();
     let statement = get_statement(context.0.clone(), compiler);
-    println!("- Get type of {statement}");
+    incremental::println(format!("Get type of {statement}"));
 
-    match statement {
+    let typ = match statement {
         TopLevelStatement::Import { .. } => TopLevelDefinitionType::unit(),
         TopLevelStatement::Print(..) => TopLevelDefinitionType::unit(),
         TopLevelStatement::Definition(definition) => {
@@ -38,15 +39,19 @@ pub fn get_type_impl(context: &GetType, compiler: &mut CompilerHandle) -> TopLev
                 result.typ.clone()
             }
         },
-    }
+    };
+    incremental::exit_query();
+    typ
 }
 
 /// Actually type check a statement and its contents.
 /// Unlike `get_type_impl`, this always type checks the expressions inside a statement
 /// to ensure they type check correctly.
 pub fn type_check_impl(context: &TypeCheck, compiler: &mut CompilerHandle) -> TypeCheckResult {
+    incremental::enter_query();
     let statement = incremental::get_statement(context.0.clone(), compiler).clone();
-    println!("- Type checking {statement}");
+    incremental::println(format!("Type checking {statement}"));
+
     let resolve = incremental::resolve(context.0.clone(), compiler).clone();
     let mut checker = TypeChecker::new(context.0.clone(), resolve, compiler);
 
@@ -68,6 +73,8 @@ pub fn type_check_impl(context: &TypeCheck, compiler: &mut CompilerHandle) -> Ty
             }
         },
     };
+
+    incremental::exit_query();
     checker.finish(typ)
 }
 

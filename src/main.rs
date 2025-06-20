@@ -28,10 +28,7 @@ use std::{
     rc::Rc,
 };
 
-use crate::{
-    errors::{Error, Errors},
-    incremental::{Parse, TypeCheck, VisibleDefinitions},
-};
+use crate::errors::{Error, Errors};
 
 // All the compiler passes:
 mod definition_collection;
@@ -39,6 +36,7 @@ mod lexer;
 mod name_resolution;
 mod parser;
 mod type_inference;
+mod backend;
 
 // Util modules:
 mod errors;
@@ -72,7 +70,7 @@ fn main() {
     // so we can't dynamically update our inputs within another query. Instead, we
     // can query to collect them all and update them here at top-level.
     let (files, mut errors) = collect_all_changed_files(file_name, &mut compiler);
-    errors.extend(compile(files, &mut compiler));
+    errors.extend(compile_all(files, &mut compiler));
 
     println!("Compiler finished.\n");
 
@@ -119,33 +117,30 @@ fn collect_all_changed_files(start_file: Rc<String>, compiler: &mut Compiler) ->
     (finished, errors)
 }
 
-fn compile(files: HashSet<Rc<String>>, compiler: &mut Compiler) -> Errors {
-    let mut errors = Vec::new();
+fn compile_all(files: HashSet<Rc<String>>, compiler: &mut Compiler) -> Errors {
     for file in files {
-        let ast = compiler.get(Parse { file_name: file.clone() }).ast.clone();
-        // The errors from def collection aren't included in the resolution errors
-        errors.extend(compiler.get(VisibleDefinitions { file_name: file }).1.iter().cloned());
-
-        for item in ast.statements.iter() {
-            let result = compiler.get(TypeCheck(item.id().clone())).clone();
-            errors.extend(result.errors);
-            println!("  - {item}  : {}", result.typ);
+        let output_file = file.replace(".ex", ".py");
+        let text = incremental::compile_file(file, compiler);
+        if let Err(msg) = write_file(&output_file, text) {
+            println!("! {msg}");
         }
     }
-    errors
+    Vec::new()
+}
+
+fn write_file(file_name: &str, text: &str) -> Result<(), String> {
+    let mut metadata_file =
+        File::create(file_name).map_err(|error| format!("Failed to create file `{file_name}`:\n{error}"))?;
+
+    let text = text.as_bytes();
+    metadata_file.write_all(text).map_err(|error| format!("Failed to write to file `{file_name}`:\n{error}"))
 }
 
 /// This could be changed so that we only write if the metadata actually
 /// changed but to simplify things we just always write.
 fn write_metadata(compiler: Compiler) -> Result<(), String> {
     let serialized = ron::to_string(&compiler).map_err(|error| format!("Failed to serialize database:\n{error}"))?;
-
-    let serialized = serialized.into_bytes();
-
-    let mut metadata_file =
-        File::create(METADATA_FILE).map_err(|error| format!("Failed to create file `{METADATA_FILE}`:\n{error}"))?;
-
-    metadata_file.write_all(&serialized).map_err(|error| format!("Failed to write to file `{METADATA_FILE}`:\n{error}"))
+    write_file(METADATA_FILE, &serialized)
 }
 
 fn read_file(file_name: &str) -> Result<String, String> {

@@ -39,8 +39,10 @@ pub enum Origin {
 }
 
 pub fn resolve_impl(context: &Resolve, compiler: &mut CompilerHandle) -> ResolutionResult {
+    incremental::enter_query();
     let statement = incremental::get_statement(context.0.clone(), compiler).clone();
-    println!("- Resolving {statement}");
+    incremental::println(format!("Resolving {statement}"));
+
     let names_in_scope = incremental::get_globally_visible_definitions(context.0.file_path.clone(), compiler).0.clone();
 
     let mut resolver = Resolver::new(compiler, context.0.clone(), names_in_scope);
@@ -51,6 +53,7 @@ pub fn resolve_impl(context: &Resolve, compiler: &mut CompilerHandle) -> Resolut
         TopLevelStatement::Print(expression, _) => resolver.resolve_expr(&expression),
     }
 
+    incremental::exit_query();
     resolver.result()
 }
 

@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::{Error, Errors, Location, LocationData, Position},
-    incremental::{CompilerHandle, Parse},
+    incremental::{self, CompilerHandle, Parse},
     lexer::{self, tokens::Token},
 };
 
@@ -89,12 +89,14 @@ pub struct TopLevelMetaData {
 }
 
 pub fn parse_impl(params: &Parse, db: &mut CompilerHandle) -> ParserResult {
-    println!("- Parsing {}", params.file_name);
+    incremental::enter_query();
+    incremental::println(format!("Parsing {}", params.file_name));
 
     let tokens = lexer::lex_file(params.file_name.clone(), db);
     let mut parser = Parser::new(params.file_name.clone(), tokens);
     let ast = parser.parse();
 
+    incremental::exit_query();
     ParserResult { ast: Rc::new(ast), errors: parser.errors, top_level_data: parser.top_level_data }
 }
 

@@ -1,18 +1,12 @@
-use std::{collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, rc::Rc, sync::atomic::{AtomicUsize, Ordering}};
 
 use inc_complete::{OutputType, define_input, define_intermediate, impl_storage, storage::HashMapStorage};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    definition_collection,
-    errors::{Errors, Location},
-    name_resolution::{self, ResolutionResult},
-    parser::{
-        self, ParserResult,
-        ast::{Ast, TopLevelStatement},
-        ids::TopLevelId,
-    },
-    type_inference::{self, TypeCheckResult, types::TopLevelDefinitionType},
+    backend, definition_collection, errors::{Errors, Location}, name_resolution::{self, ResolutionResult}, parser::{
+        self, ast::{Ast, TopLevelStatement}, ids::TopLevelId, ParserResult
+    }, type_inference::{self, types::TopLevelDefinitionType, TypeCheckResult}
 };
 
 pub type Compiler = inc_complete::Db<Storage>;
@@ -29,6 +23,7 @@ pub struct Storage {
     top_level_statement: HashMapStorage<GetTopLevelStatement>,
     get_types: HashMapStorage<GetType>,
     type_checks: HashMapStorage<TypeCheck>,
+    compiled_files: HashMapStorage<CompileFile>,
 }
 
 impl_storage!(Storage,
@@ -41,7 +36,18 @@ impl_storage!(Storage,
     top_level_statement: GetTopLevelStatement,
     get_types: GetType,
     type_checks: TypeCheck,
+    compiled_files: CompileFile,
 );
+
+// This is a helper to show us how many queries deep we are for our print outs
+static QUERY_NESTING: AtomicUsize = AtomicUsize::new(0);
+pub fn enter_query() { QUERY_NESTING.fetch_add(1, Ordering::Relaxed); }
+pub fn exit_query() { QUERY_NESTING.fetch_sub(1, Ordering::Relaxed); }
+pub fn println(msg: String) {
+    let level = QUERY_NESTING.load(Ordering::Relaxed);
+    let spaces = "  ".repeat(level);
+    println!("{spaces}- {msg}");
+}
 
 ///////////////////////////////////////////////////////////
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -175,4 +181,14 @@ define_intermediate!(8, TypeCheck -> TypeCheckResult, Storage, type_inference::t
 
 pub fn type_check<'c>(item: TopLevelId, db: &'c mut CompilerHandle) -> &'c <TypeCheck as OutputType>::Output {
     db.get(TypeCheck(item))
+}
+
+///////////////////////////////////////////////////////////
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompileFile { pub file_name: Rc<String> }
+
+define_intermediate!(9, CompileFile -> String, Storage, backend::compile_file_impl);
+
+pub fn compile_file<'c>(file_name: Rc<String>, db: &'c mut Compiler) -> &'c String {
+    db.get(CompileFile { file_name })
 }
