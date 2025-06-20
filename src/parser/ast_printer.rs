@@ -41,7 +41,7 @@ impl std::fmt::Display for Definition {
             write!(f, ": {typ}")?;
         }
 
-        write!(f, " =\n    {}", self.body)
+        write!(f, " = {}", self.body)
     }
 }
 

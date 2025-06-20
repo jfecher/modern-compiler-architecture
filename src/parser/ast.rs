@@ -18,6 +18,16 @@ pub enum TopLevelStatement {
     Print(Rc<Expression>, TopLevelId),
 }
 
+impl TopLevelStatement {
+    pub fn id(&self) -> &TopLevelId {
+        match self {
+            TopLevelStatement::Import { id, .. } => id,
+            TopLevelStatement::Definition(definition) => &definition.id,
+            TopLevelStatement::Print(_, id) => id,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identifier {
     pub name: Rc<String>,
@@ -38,6 +48,17 @@ pub enum Expression {
     Variable(Identifier),
     FunctionCall { function: Rc<Expression>, argument: Rc<Expression>, id: ExprId },
     Lambda { parameter_name: Identifier, body: Rc<Expression>, id: ExprId },
+}
+
+impl Expression {
+    pub fn id(&self) -> ExprId {
+        match self {
+            Expression::IntegerLiteral(_, id) => *id,
+            Expression::Variable(identifier) => identifier.id,
+            Expression::FunctionCall { id, .. } => *id,
+            Expression::Lambda { id, .. } => *id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

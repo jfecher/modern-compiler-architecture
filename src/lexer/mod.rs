@@ -1,7 +1,10 @@
 use std::{rc::Rc, str::CharIndices};
 use tokens::Token;
 
-use crate::{errors::{Location, LocationData, Position}, incremental::{get_source_file, CompilerHandle}};
+use crate::{
+    errors::{Location, LocationData, Position},
+    incremental::{CompilerHandle, get_source_file},
+};
 
 pub mod tokens;
 
@@ -68,11 +71,7 @@ impl<'src> Lexer<'src> {
     }
 
     fn location(&self, start: Position, end: Position) -> Location {
-        Rc::new(LocationData {
-            file_name: self.file_name.clone(),
-            start,
-            end,
-        })
+        Rc::new(LocationData { file_name: self.file_name.clone(), start, end })
     }
 
     /// Create a Location with the end Position being `self.current_position`
@@ -95,7 +94,7 @@ impl<'src> Lexer<'src> {
                 self.advance();
                 self.advance();
                 Some((Token::RightArrow, self.location_from(start)))
-            }
+            },
             '-' => advance_with(self, Token::Minus),
             '+' => advance_with(self, Token::Plus),
             '(' => advance_with(self, Token::ParenLeft),
@@ -105,10 +104,10 @@ impl<'src> Lexer<'src> {
                     self.advance();
                 }
                 self.next_token()
-            }
+            },
             c if c.is_whitespace() => self.lex_whitespace(),
-            c if c.is_alphanumeric() => self.lex_word(),
             c if c.is_ascii_digit() => self.lex_integer(),
+            c if c.is_alphanumeric() => self.lex_word(),
             '\0' => None, // End of input
             // Unexpected token. We can't error so give it to the parser to error there
             unexpected => advance_with(self, Token::Unexpected(unexpected)),
@@ -128,7 +127,7 @@ impl<'src> Lexer<'src> {
         let mut word = String::new();
         let start = self.current_position;
 
-        while self.current_char.is_alphanumeric() {
+        while self.current_char.is_alphanumeric() || self.current_char == '_' {
             word.push(self.current_char);
             self.advance();
         }
@@ -152,7 +151,8 @@ impl<'src> Lexer<'src> {
         let start = self.current_position;
 
         while self.current_char.is_ascii_digit() {
-            let digit = self.current_char.to_digit(10).expect("We already verified this is a valid ascii base-10 digit");
+            let digit =
+                self.current_char.to_digit(10).expect("We already verified this is a valid ascii base-10 digit");
             integer = integer * 10 + digit as i64;
             self.advance();
         }

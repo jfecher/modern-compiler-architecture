@@ -43,6 +43,9 @@ pub enum Error {
     NameAlreadyInScope { name: Rc<String>, first_location: Location, second_location: Location },
     ImportedNameAlreadyInScope { name: Rc<String>, first_location: Location, second_location: Location },
     UnknownImportFile { file_name: Rc<String>, location: Location },
+    NameNotInScope { name: Rc<String>, location: Location },
+    ExpectedType { actual: String, expected: String, location: Location },
+    RecursiveType { typ: String, location: Location },
 }
 
 impl Error {
@@ -62,6 +65,15 @@ impl Error {
             },
             Error::UnknownImportFile { file_name, location } => {
                 format!("{location}: Cannot read source file `{file_name}`, does it exist?")
+            },
+            Error::NameNotInScope { name, location } => {
+                format!("{location}: `{name}` is not defined, was it a typo?")
+            },
+            Error::ExpectedType { actual, expected, location } => {
+                format!("{location}: Expected type `{expected}` but found `{actual}`")
+            },
+            Error::RecursiveType { typ, location } => {
+                format!("{location}: Binding here would create an infinitely recursive type with `{typ}`")
             },
         }
     }

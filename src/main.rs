@@ -28,9 +28,13 @@ use std::{
     rc::Rc,
 };
 
-use crate::errors::{Error, Errors};
+use crate::{
+    errors::{Error, Errors},
+    incremental::{Parse, TypeCheck, VisibleDefinitions},
+};
 
-// All the compiler passes in order:
+// All the compiler passes:
+mod definition_collection;
 mod lexer;
 mod name_resolution;
 mod parser;
@@ -67,15 +71,11 @@ fn main() {
     // files which have changed. These are the imports to our incremental compilation
     // so we can't dynamically update our inputs within another query. Instead, we
     // can query to collect them all and update them here at top-level.
-    let mut errors = collect_all_changed_files(file_name.clone(), &mut compiler);
+    let (files, mut errors) = collect_all_changed_files(file_name, &mut compiler);
+    errors.extend(compile(files, &mut compiler));
 
-    let (definitions, more_errors) = incremental::get_globally_visible_definitions(file_name, &mut compiler);
-    errors.extend(more_errors.iter().cloned());
-
-    // let (ast, errors) = compiler.get(Parse { file_name }).clone();
     println!("Compiler finished.\n");
 
-    println!("Visible definitions: {}\n\nerrors:", definitions.len());
     for error in errors {
         println!("  {}", error.message());
     }
@@ -85,15 +85,16 @@ fn main() {
     }
 }
 
-fn collect_all_changed_files(start_file: Rc<String>, compiler: &mut Compiler) -> Errors {
+fn collect_all_changed_files(start_file: Rc<String>, compiler: &mut Compiler) -> (HashSet<Rc<String>>, Errors) {
     // We expect `compiler.update_input` to already be called for start_file.
     // Reason being is that we can't start with `start_file` in our queue because
     // it is the only file without a source location for the import, because there was no import.
-    let imports = incremental::get_imports(start_file, compiler);
+    let imports = incremental::get_imports(start_file.clone(), compiler);
 
     let mut queue = imports.iter().cloned().collect::<VecDeque<_>>();
 
     let mut finished = HashSet::new();
+    finished.insert(start_file);
     let mut errors = Vec::new();
 
     while let Some((file, location)) = queue.pop_front() {
@@ -115,6 +116,22 @@ fn collect_all_changed_files(start_file: Rc<String>, compiler: &mut Compiler) ->
         queue.extend(imports.iter().cloned());
     }
 
+    (finished, errors)
+}
+
+fn compile(files: HashSet<Rc<String>>, compiler: &mut Compiler) -> Errors {
+    let mut errors = Vec::new();
+    for file in files {
+        let ast = compiler.get(Parse { file_name: file.clone() }).ast.clone();
+        // The errors from def collection aren't included in the resolution errors
+        errors.extend(compiler.get(VisibleDefinitions { file_name: file }).1.iter().cloned());
+
+        for item in ast.statements.iter() {
+            let result = compiler.get(TypeCheck(item.id().clone())).clone();
+            errors.extend(result.errors);
+            println!("  - {item}  : {}", result.typ);
+        }
+    }
     errors
 }
 

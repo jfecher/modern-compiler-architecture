@@ -1,0 +1,228 @@
+use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    errors::{Error, Errors},
+    incremental::{self, CompilerHandle, GetType, TypeCheck, get_statement, get_type},
+    name_resolution::{Origin, ResolutionResult},
+    parser::{
+        ast::{Expression, TopLevelStatement},
+        ids::{ExprId, TopLevelId},
+    },
+    type_inference::types::{TopLevelDefinitionType, Type, TypeVariable, TypeVariableId},
+};
+
+pub mod types;
+
+/// Get the type of the name defined by this TopLevelItemId.
+/// If this doesn't define a name we return the Unit type by default.
+///
+/// This is very similar to but separate from `type_check_impl`. We separate these
+/// because `type_check_impl` will always type check the contents of a definition,
+/// and we don't want other definitions to depend on the contents of another definition
+/// if the other definition provides a type annotation. Without type annotations the two
+/// functions should be mostly equivalent.
+pub fn get_type_impl(context: &GetType, compiler: &mut CompilerHandle) -> TopLevelDefinitionType {
+    let statement = get_statement(context.0.clone(), compiler);
+    println!("- Get type of {statement}");
+
+    match statement {
+        TopLevelStatement::Import { .. } => TopLevelDefinitionType::unit(),
+        TopLevelStatement::Print(..) => TopLevelDefinitionType::unit(),
+        TopLevelStatement::Definition(definition) => {
+            if let Some(typ) = &definition.typ {
+                TopLevelDefinitionType::from_ast_type(typ)
+            } else {
+                let result = incremental::type_check(context.0.clone(), compiler);
+                result.typ.clone()
+            }
+        },
+    }
+}
+
+/// Actually type check a statement and its contents.
+/// Unlike `get_type_impl`, this always type checks the expressions inside a statement
+/// to ensure they type check correctly.
+pub fn type_check_impl(context: &TypeCheck, compiler: &mut CompilerHandle) -> TypeCheckResult {
+    let statement = incremental::get_statement(context.0.clone(), compiler).clone();
+    println!("- Type checking {statement}");
+    let resolve = incremental::resolve(context.0.clone(), compiler).clone();
+    let mut checker = TypeChecker::new(context.0.clone(), resolve, compiler);
+
+    let typ = match statement {
+        TopLevelStatement::Import { .. } => TopLevelDefinitionType::unit(),
+        TopLevelStatement::Print(expression, _) => {
+            checker.check_expr(&expression);
+            TopLevelDefinitionType::unit()
+        },
+        TopLevelStatement::Definition(definition) => {
+            let actual_type = checker.check_expr(&definition.body);
+
+            if let Some(typ) = &definition.typ {
+                let expected = Type::from_ast_type(typ);
+                checker.unify(&actual_type, &expected, definition.body.id());
+                expected.generalize()
+            } else {
+                actual_type.generalize()
+            }
+        },
+    };
+    checker.finish(typ)
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeCheckResult {
+    pub typ: TopLevelDefinitionType,
+    pub expr_types: BTreeMap<ExprId, Type>,
+    pub errors: Errors,
+}
+
+struct TypeChecker<'local, 'inner> {
+    compiler: &'local mut CompilerHandle<'inner>,
+    origins: BTreeMap<ExprId, Origin>,
+    expr_types: BTreeMap<ExprId, Type>,
+    item: TopLevelId,
+    next_id: u32,
+    errors: Errors,
+}
+
+impl<'local, 'inner> TypeChecker<'local, 'inner> {
+    fn new(item: TopLevelId, resolve: ResolutionResult, compiler: &'local mut CompilerHandle<'inner>) -> Self {
+        Self {
+            compiler,
+            item,
+            origins: resolve.origins,
+            next_id: 0,
+            expr_types: Default::default(),
+            errors: resolve.errors,
+        }
+    }
+
+    fn finish(self, typ: TopLevelDefinitionType) -> TypeCheckResult {
+        TypeCheckResult { typ, expr_types: self.expr_types, errors: self.errors }
+    }
+
+    fn next_type_variable(&mut self) -> TypeVariable {
+        let id = TypeVariableId(self.next_id);
+        self.next_id += 1;
+        TypeVariable { id, binding: Rc::new(RefCell::new(None)) }
+    }
+
+    fn next_type_variable_t(&mut self) -> Type {
+        Type::TypeVariable(self.next_type_variable())
+    }
+
+    fn store_and_return_type(&mut self, expr: ExprId, typ: Type) -> Type {
+        self.expr_types.insert(expr, typ.clone());
+        typ
+    }
+
+    fn lookup_type(&mut self, expr: ExprId) -> Type {
+        match self.origins.get(&expr) {
+            // A name resolution error occurred, don't issue a type error as well
+            None => Type::Error,
+            Some(Origin::Parameter(id)) => self.expr_types.get(id).unwrap().clone(),
+            Some(Origin::TopLevelDefinition(id)) => {
+                // We may recursively type check here. This can lead to infinite
+                // recursion for mutually recursive functions with inferred types.
+                // To simplify type inference for this toy compiler, we don't handle this case.
+                let typ = get_type(id.clone(), self.compiler).clone();
+                self.instantiate(&typ)
+            },
+        }
+    }
+
+    /// Returns the type of `+` or `-`. Returns `None` if `name` is not `+` or `-`.
+    fn try_get_type_for_builtin(&self, name: &str) -> Option<Type> {
+        if name == "+" || name == "-" {
+            Some(Type::Function {
+                parameter: Rc::new(Type::Int),
+                return_type: Rc::new(Type::Function { parameter: Rc::new(Type::Int), return_type: Rc::new(Type::Int) }),
+            })
+        } else {
+            None
+        }
+    }
+
+    fn check_expr(&mut self, expr: &Expression) -> Type {
+        match expr {
+            Expression::IntegerLiteral(_, id) => self.store_and_return_type(*id, Type::Int),
+            Expression::Variable(identifier) => {
+                // If this is a built-in, get that type. Otherwise, lookup or query its type.
+                let typ =
+                    self.try_get_type_for_builtin(&identifier.name).unwrap_or_else(|| self.lookup_type(identifier.id));
+                self.store_and_return_type(identifier.id, typ)
+            },
+            Expression::FunctionCall { function, argument, id } => {
+                let return_type = self.next_type_variable_t();
+                let expected = Type::Function {
+                    parameter: Rc::new(self.check_expr(argument)),
+                    return_type: Rc::new(return_type.clone()),
+                };
+                let actual = self.check_expr(function);
+                self.unify(&actual, &expected, *id);
+                self.store_and_return_type(*id, return_type)
+            },
+            Expression::Lambda { parameter_name, body, id } => {
+                let parameter_type = self.next_type_variable_t();
+                self.expr_types.insert(parameter_name.id, parameter_type.clone());
+                let body_type = self.check_expr(body);
+                let function_type =
+                    Type::Function { parameter: Rc::new(parameter_type), return_type: Rc::new(body_type) };
+                self.store_and_return_type(*id, function_type)
+            },
+        }
+    }
+
+    fn instantiate(&mut self, typ: &TopLevelDefinitionType) -> Type {
+        let substitutions = typ.type_variables.iter().map(|id| (*id, self.next_type_variable_t())).collect();
+        typ.typ.substitute(&substitutions)
+    }
+
+    fn unify(&mut self, actual: &Type, expected: &Type, id: ExprId) {
+        match (actual, expected) {
+            (Type::Error, _) | (_, Type::Error) => (),
+            (Type::Unit, Type::Unit) => (),
+            (Type::Int, Type::Int) => (),
+            (Type::Generic(name1), Type::Generic(name2)) if name1.name == name2.name => (),
+            (
+                Type::Function { parameter: actual_parameter, return_type: actual_return_type },
+                Type::Function { parameter: expected_parameter, return_type: expected_return_type },
+            ) => {
+                self.unify(&actual_parameter, &expected_parameter, id);
+                self.unify(&actual_return_type, &expected_return_type, id);
+            },
+            // If the type variable is already bound to something, recur on that binding
+            (Type::TypeVariable(actual), expected) if actual.binding.borrow().is_some() => {
+                let actual = actual.binding.borrow();
+                self.unify(actual.as_ref().unwrap(), expected, id);
+            },
+            // If the type variable is already bound to something, recur on that binding
+            (actual, Type::TypeVariable(expected)) if expected.binding.borrow().is_some() => {
+                let expected = expected.binding.borrow();
+                self.unify(actual, expected.as_ref().unwrap(), id);
+            },
+            (type_var_type @ Type::TypeVariable(type_var), other)
+            | (other, type_var_type @ Type::TypeVariable(type_var)) => {
+                if type_var_type == other {
+                    // Don't bind a type variable to itself
+                } else if !type_var.id.occurs_in(other) {
+                    *type_var.binding.borrow_mut() = Some(other.clone());
+                } else {
+                    // Error, binding here would make a recursive type!
+                    let location = id.location(&self.item, self.compiler);
+                    let actual = actual.to_string();
+                    let expected = expected.to_string();
+                    self.errors.push(Error::ExpectedType { actual, expected, location })
+                }
+            },
+            (actual, expected) => {
+                let location = id.location(&self.item, self.compiler);
+                let actual = actual.to_string();
+                let expected = expected.to_string();
+                self.errors.push(Error::ExpectedType { actual, expected, location })
+            },
+        }
+    }
+}

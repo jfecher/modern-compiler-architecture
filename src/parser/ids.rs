@@ -27,7 +27,7 @@ use crate::{
 /// data with an Ast including its Location, and later on its Type.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TopLevelId {
-    file_path: Rc<String>,
+    pub file_path: Rc<String>,
     content_hash: u64,
 }
 

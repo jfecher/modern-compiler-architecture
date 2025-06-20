@@ -1,91 +1,121 @@
-use std::rc::Rc;
+use std::{collections::BTreeMap, rc::Rc};
+
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    errors::{Error, Errors, Location},
-    incremental::{
-        CompilerHandle, Definitions, ExportedDefinitions, GetImports, VisibleDefinitions, get_exported_definitions,
-        parse, parse_cloned,
+    errors::{Error, Errors},
+    incremental::{self, CompilerHandle, Resolve},
+    parser::{
+        ast::{Expression, TopLevelStatement},
+        ids::{ExprId, TopLevelId},
     },
-    parser::ast::TopLevelStatement,
 };
 
-/// Collect all definitions which should be visible to expressions within this file.
-/// This includes all top-level definitions within this file, as well as any imported ones.
-pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &mut CompilerHandle) -> (Definitions, Errors) {
-    println!("- Collecting visible definitions in {}", context.file_name);
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ResolutionResult {
+    /// This resolution is for a single top level id so all expressions within are in the
+    /// context of that id.
+    pub origins: BTreeMap<ExprId, Origin>,
+    pub errors: Errors,
+}
 
-    let (mut definitions, mut errors) = get_exported_definitions(context.file_name.clone(), db).clone();
+struct Resolver<'local, 'inner> {
+    item: TopLevelId,
+    links: BTreeMap<ExprId, Origin>,
+    errors: Errors,
+    names_in_global_scope: BTreeMap<Rc<String>, TopLevelId>,
+    parameters_in_scope: BTreeMap<Rc<String>, ExprId>,
+    compiler: &'local mut CompilerHandle<'inner>,
+}
 
-    // This should always be cached. Ignoring errors here since they should already be
-    // included in get_exported_definitions' errors
-    let ast = parse(context.file_name.clone(), db).0.clone();
+/// Where was this variable defined?
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Origin {
+    /// This name comes from this top level definition
+    TopLevelDefinition(TopLevelId),
+    /// This name is the parameter of this lambda expression.
+    /// Remember that all lambdas define only a single parameter.
+    Parameter(ExprId),
+}
 
-    for item in ast.statements.iter() {
-        if let TopLevelStatement::Import { file_name, id: import_id } = item {
-            let (exports, more_errors) = get_exported_definitions(file_name.name.clone(), db).clone();
-            errors.extend(more_errors);
+pub fn resolve_impl(context: &Resolve, compiler: &mut CompilerHandle) -> ResolutionResult {
+    let statement = incremental::get_statement(context.0.clone(), compiler).clone();
+    println!("- Resolving {statement}");
+    let names_in_scope = incremental::get_globally_visible_definitions(context.0.file_path.clone(), compiler).0.clone();
 
-            for (exported_name, exported_id) in exports {
-                if let Some(existing) = definitions.get(&exported_name) {
-                    // This reports the location the item was defined in, not the location it was imported at.
-                    // I could improve this but instead I'll leave it as an exercise for the reader!
-                    let first_location = existing.location(db);
-                    let second_location = import_id.location(db);
-                    let name = exported_name;
-                    errors.push(Error::ImportedNameAlreadyInScope { name, first_location, second_location });
+    let mut resolver = Resolver::new(compiler, context.0.clone(), names_in_scope);
+
+    match statement {
+        TopLevelStatement::Import { .. } => (),
+        TopLevelStatement::Definition(definition) => resolver.resolve_expr(&definition.body),
+        TopLevelStatement::Print(expression, _) => resolver.resolve_expr(&expression),
+    }
+
+    resolver.result()
+}
+
+impl<'local, 'inner> Resolver<'local, 'inner> {
+    fn new(
+        compiler: &'local mut CompilerHandle<'inner>, item: TopLevelId,
+        names_in_scope: BTreeMap<Rc<String>, TopLevelId>,
+    ) -> Self {
+        Self {
+            compiler,
+            item,
+            names_in_global_scope: names_in_scope,
+            links: Default::default(),
+            errors: Vec::new(),
+            parameters_in_scope: Default::default(),
+        }
+    }
+
+    fn result(self) -> ResolutionResult {
+        ResolutionResult { origins: self.links, errors: self.errors }
+    }
+
+    fn lookup(&self, name: &Rc<String>) -> Option<Origin> {
+        // Check local parameters first. They shadow global definitions
+        if let Some(expr) = self.parameters_in_scope.get(name) {
+            return Some(Origin::Parameter(*expr));
+        }
+        if let Some(statement) = self.names_in_global_scope.get(name) {
+            return Some(Origin::TopLevelDefinition(statement.clone()));
+        }
+        None
+    }
+
+    fn link(&mut self, name: &Rc<String>, expr: ExprId) {
+        if name.as_ref() == "+" || name.as_ref() == "-" {
+            // Ignore built-ins
+        } else if let Some(origin) = self.lookup(name) {
+            self.links.insert(expr, origin);
+        } else {
+            let location = expr.location(&self.item, self.compiler);
+            self.errors.push(Error::NameNotInScope { name: name.clone(), location });
+        }
+    }
+
+    fn resolve_expr(&mut self, expression: &Expression) {
+        match expression {
+            Expression::IntegerLiteral(..) => (),
+            Expression::Variable(identifier) => self.link(&identifier.name, identifier.id),
+            Expression::FunctionCall { function, argument, id: _ } => {
+                self.resolve_expr(&function);
+                self.resolve_expr(&argument);
+            },
+            Expression::Lambda { parameter_name, body, id: _ } => {
+                // Resolve body with the parameter name in scope
+                let old_name = self.parameters_in_scope.insert(parameter_name.name.clone(), parameter_name.id);
+                self.resolve_expr(&body);
+
+                // Then remember to either remove the parameter name from scope, or if we shadowed
+                // an existing name, then re-insert that one.
+                if let Some(old_name) = old_name {
+                    self.parameters_in_scope.insert(parameter_name.name.clone(), old_name);
                 } else {
-                    definitions.insert(exported_name, exported_id);
+                    self.parameters_in_scope.remove(&parameter_name.name);
                 }
-            }
+            },
         }
     }
-
-    (definitions, errors)
-}
-
-/// Collect only the exported definitions within a file.
-/// For this small example language, this is all top-level definitions in a file, except for imported ones.
-pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &mut CompilerHandle) -> (Definitions, Errors) {
-    println!("- Collecting exported definitions in {}", context.file_name);
-
-    let (ast, mut errors) = parse_cloned(context.file_name.clone(), db);
-    let mut definitions = Definitions::default();
-
-    // Collect each definition, issuing an error if there is a duplicate name (imports are not counted)
-    for item in ast.statements.iter() {
-        if let TopLevelStatement::Definition(definition) = item {
-            if let Some(existing) = definitions.get(&definition.name.name) {
-                let first_location = existing.location(db);
-                let second_location = definition.name.id.location(&definition.id, db);
-                let name = definition.name.name.clone();
-                errors.push(Error::NameAlreadyInScope { name, first_location, second_location });
-            } else {
-                definitions.insert(definition.name.name.clone(), definition.id.clone());
-            }
-        }
-    }
-
-    (definitions, errors)
-}
-
-/// Collects the file names of all imports within this file.
-pub fn get_imports_impl(context: &GetImports, db: &mut CompilerHandle) -> Vec<(Rc<String>, Location)> {
-    println!("- Collecting imports of {}", context.file_name);
-
-    // Ignore parse errors for now, we can report them later
-    let ast = parse(context.file_name.clone(), db).0.clone();
-    let mut imports = Vec::new();
-
-    // Collect each definition, issuing an error if there is a duplicate name (imports are not counted)
-    for item in ast.statements.iter() {
-        if let TopLevelStatement::Import { file_name, id } = item {
-            // We don't care about duplicate imports.
-            // This method is only used for finding input files and the top-level
-            // will filter out any repeats.
-            let location = id.location(db);
-            imports.push((file_name.name.clone(), location));
-        }
-    }
-
-    imports
 }

@@ -4,9 +4,15 @@ use inc_complete::{OutputType, define_input, define_intermediate, impl_storage, 
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    definition_collection,
     errors::{Errors, Location},
-    name_resolution,
-    parser::{self, ParserResult, ast::Ast, ids::TopLevelId},
+    name_resolution::{self, ResolutionResult},
+    parser::{
+        self, ParserResult,
+        ast::{Ast, TopLevelStatement},
+        ids::TopLevelId,
+    },
+    type_inference::{self, TypeCheckResult, types::TopLevelDefinitionType},
 };
 
 pub type Compiler = inc_complete::Db<Storage>;
@@ -19,6 +25,10 @@ pub struct Storage {
     visible_definitions: HashMapStorage<VisibleDefinitions>,
     exported_definitions: HashMapStorage<ExportedDefinitions>,
     get_imports: HashMapStorage<GetImports>,
+    resolves: HashMapStorage<Resolve>,
+    top_level_statement: HashMapStorage<GetTopLevelStatement>,
+    get_types: HashMapStorage<GetType>,
+    type_checks: HashMapStorage<TypeCheck>,
 }
 
 impl_storage!(Storage,
@@ -27,6 +37,10 @@ impl_storage!(Storage,
     visible_definitions: VisibleDefinitions,
     exported_definitions: ExportedDefinitions,
     get_imports: GetImports,
+    resolves: Resolve,
+    top_level_statement: GetTopLevelStatement,
+    get_types: GetType,
+    type_checks: TypeCheck,
 );
 
 ///////////////////////////////////////////////////////////
@@ -78,10 +92,10 @@ pub struct VisibleDefinitions {
 /// HashMap, since hashmap iteration in rust has a nondeterministic ordering.
 pub type Definitions = BTreeMap<Rc<String>, TopLevelId>;
 
-define_intermediate!(2, VisibleDefinitions -> (Definitions, Errors), Storage, name_resolution::visible_definitions_impl);
+define_intermediate!(2, VisibleDefinitions -> (Definitions, Errors), Storage, definition_collection::visible_definitions_impl);
 
 pub fn get_globally_visible_definitions<'c>(
-    file_name: Rc<String>, db: &'c mut Compiler,
+    file_name: Rc<String>, db: &'c mut CompilerHandle,
 ) -> &'c <VisibleDefinitions as OutputType>::Output {
     db.get(VisibleDefinitions { file_name })
 }
@@ -92,7 +106,7 @@ pub struct ExportedDefinitions {
     pub file_name: Rc<String>,
 }
 
-define_intermediate!(3, ExportedDefinitions -> (Definitions, Errors), Storage, name_resolution::exported_definitions_impl);
+define_intermediate!(3, ExportedDefinitions -> (Definitions, Errors), Storage, definition_collection::exported_definitions_impl);
 
 pub fn get_exported_definitions<'c>(
     file_name: Rc<String>, db: &'c mut CompilerHandle,
@@ -106,8 +120,59 @@ pub struct GetImports {
     pub file_name: Rc<String>,
 }
 
-define_intermediate!(4, GetImports -> Vec<(Rc<String>, Location)>, Storage, name_resolution::get_imports_impl);
+define_intermediate!(4, GetImports -> Vec<(Rc<String>, Location)>, Storage, definition_collection::get_imports_impl);
 
 pub fn get_imports<'c>(file_name: Rc<String>, db: &'c mut Compiler) -> &'c <GetImports as OutputType>::Output {
     db.get(GetImports { file_name })
+}
+
+///////////////////////////////////////////////////////////
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resolve(pub TopLevelId);
+
+define_intermediate!(5, Resolve -> ResolutionResult, Storage, name_resolution::resolve_impl);
+
+pub fn resolve<'c>(item: TopLevelId, db: &'c mut CompilerHandle) -> &'c <Resolve as OutputType>::Output {
+    db.get(Resolve(item))
+}
+
+///////////////////////////////////////////////////////////
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetTopLevelStatement(pub TopLevelId);
+
+// This one is quick and simple, let's just define it here
+define_intermediate!(6, GetTopLevelStatement -> TopLevelStatement, Storage, |context, compiler| {
+    let target_id = &context.0;
+    let ast = parse(target_id.file_path.clone(), compiler).0;
+
+    for statement in ast.statements.iter() {
+        if statement.id() == target_id {
+            return statement.clone();
+        }
+    }
+    panic!("No TopLevelStatement for id {target_id}")
+});
+
+pub fn get_statement<'c>(item: TopLevelId, db: &'c mut CompilerHandle) -> &'c TopLevelStatement {
+    db.get(GetTopLevelStatement(item))
+}
+
+///////////////////////////////////////////////////////////
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetType(pub TopLevelId);
+
+define_intermediate!(7, GetType -> TopLevelDefinitionType, Storage, type_inference::get_type_impl);
+
+pub fn get_type<'c>(item: TopLevelId, db: &'c mut CompilerHandle) -> &'c <GetType as OutputType>::Output {
+    db.get(GetType(item))
+}
+
+///////////////////////////////////////////////////////////
+#[derive(Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeCheck(pub TopLevelId);
+
+define_intermediate!(8, TypeCheck -> TypeCheckResult, Storage, type_inference::type_check_impl);
+
+pub fn type_check<'c>(item: TopLevelId, db: &'c mut CompilerHandle) -> &'c <TypeCheck as OutputType>::Output {
+    db.get(TypeCheck(item))
 }
