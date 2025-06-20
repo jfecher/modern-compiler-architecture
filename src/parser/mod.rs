@@ -370,7 +370,7 @@ impl Parser {
     ///     | call
     fn parse_infix_expr(&mut self) -> Result<Expression, Error> {
         let start = self.current_location();
-        let expr = self.parse_call()?;
+        let mut expr = self.parse_call()?;
 
         // `a + b` and `a - b` are represented as function calls: `(+) a b` and `(-) a b`
         let operator = |this: &mut Self, name: &str, expr| -> Result<_, Error> {
@@ -390,11 +390,11 @@ impl Parser {
             Ok(Expression::FunctionCall { function: call1, argument: rhs, id })
         };
 
-        match self.current_token() {
-            Some(Token::Plus) => operator(self, "+", expr),
-            Some(Token::Minus) => operator(self, "-", expr),
-            _ => Ok(expr),
+        while matches!(self.current_token(), Some(Token::Plus | Token::Minus)) {
+            expr = operator(self, "+", expr)?;
         }
+        
+        Ok(expr)
     }
 
     /// call: call atom

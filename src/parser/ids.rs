@@ -69,7 +69,7 @@ impl std::fmt::Display for TopLevelId {
 }
 
 fn hash(file_path: Rc<String>, x: impl std::hash::Hash) -> TopLevelId {
-    let mut hasher = std::hash::DefaultHasher::new();
+    let mut hasher = deterministic_hash::DeterministicHasher::new(std::hash::DefaultHasher::new());
     x.hash(&mut hasher);
     TopLevelId { file_path, content_hash: hasher.finish() }
 }

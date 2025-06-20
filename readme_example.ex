@@ -11,7 +11,7 @@ import bar
 // You can think of this as `def add(x, y): return x + y` in python
 def add = fn x y ->
     // The only supported operators are `+` and `-`!
-    x + y
+    x + y + 2
 
 // Explicit types on a `def` can be specified:
 def add2: Int -> Int -> Int =

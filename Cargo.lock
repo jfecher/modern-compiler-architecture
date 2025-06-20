@@ -24,6 +24,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "deterministic-hash"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51a9f34e639edf43f709706fc3016ccc7ce5a819d339fd23665e4385af8e93f0"
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -76,6 +82,7 @@ dependencies = [
 name = "modern_compiler_architecture"
 version = "0.1.0"
 dependencies = [
+ "deterministic-hash",
  "inc-complete",
  "ron",
  "serde",
