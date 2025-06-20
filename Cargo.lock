@@ -60,9 +60,9 @@ dependencies = [
 
 [[package]]
 name = "inc-complete"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45235a9237859383a14d4f1e4421f6b5a5947f00155f9c40e3e9651ce893efdd"
+checksum = "85fc2001e3d3c8f55d62057941d7ba63a0ea3f8a89f513c5267ad72f72487431"
 dependencies = [
  "petgraph",
  "serde",

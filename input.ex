@@ -11,12 +11,12 @@ import bar
 // You can think of this as `def add(x, y): return x + y` in python
 def add = fn x y ->
     // The only supported operators are `+` and `-`!
-    x + y + 2
+    x + y
 
 // Explicit types on a `def` can be specified:
 def add2: Int -> Int -> Int =
     // Note that functions are curried automatically
-    fn x y -> x + y
+    fn x y -> x + y + 1
 
 // Higher-order functions are supported
 def apply = fn f x -> f x

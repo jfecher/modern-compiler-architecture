@@ -42,7 +42,7 @@ mod backend;
 mod errors;
 mod incremental;
 
-const INPUT_FILE: &str = "readme_example.ex";
+const INPUT_FILE: &str = "input.ex";
 const METADATA_FILE: &str = "incremental_metadata.ron";
 
 // Deserialize the compiler from our metadata file.
