@@ -22,10 +22,10 @@
 //!   which functions we're caching the result of.
 use incremental::{Compiler, set_source_file};
 use std::{
-    collections::{HashSet, VecDeque},
+    collections::HashSet,
     fs::File,
     io::{Read, Write},
-    rc::Rc,
+    sync::Arc,
 };
 
 use crate::errors::{Error, Errors};
@@ -60,7 +60,7 @@ fn main() {
 
     let Ok(source) = read_file(INPUT_FILE) else { return };
 
-    let file_name = Rc::new(INPUT_FILE.to_string());
+    let file_name = Arc::new(INPUT_FILE.to_string());
     set_source_file(&file_name, source, &mut compiler);
 
     println!("Passes Run:");
@@ -83,45 +83,68 @@ fn main() {
     }
 }
 
-fn collect_all_changed_files(start_file: Rc<String>, compiler: &mut Compiler) -> (HashSet<Rc<String>>, Errors) {
+/// One limitation of query systems is that you cannot change inputs during an incremental
+/// computation. For a compiler, this means dynamically discovering new files (inputs) to parse is
+/// a bit more difficult. Instead of doing it within an incremental computation like the parser or
+/// during name resolution, we have a separate step here to collect all the files that are used and
+/// check if any have changed. Some frameworks may let you iterate through known inputs where you
+/// may be able to test if a file has changed there, but inc-complete doesn't support this (yet) as
+/// of version 0.5.0.
+///
+/// In `collect_all_changed_files`, we start by parsing the first INPUT_FILE which imports all
+/// other files. We collect each import and for each import we read the new file, set the source
+/// file input (which requires an exclusive &mut reference), and spawn a thread to parse that file
+/// and collect the imports. Spawning multiple threads here is advantageous when a file imports
+/// many source files - we can distribute work to parse many of them at once. The implementation
+/// for this could be more efficient though. For example, the parser could accept the shared `queue`
+/// of files to parse as an argument, and push to this queue immediately when it finds an import.
+fn collect_all_changed_files(start_file: Arc<String>, compiler: &mut Compiler) -> (HashSet<Arc<String>>, Errors) {
     // We expect `compiler.update_input` to already be called for start_file.
     // Reason being is that we can't start with `start_file` in our queue because
     // it is the only file without a source location for the import, because there was no import.
     let imports = incremental::get_imports(start_file.clone(), compiler);
+    let queue = imports.iter().cloned().collect::<scc::Queue<_>>();
 
-    let mut queue = imports.iter().cloned().collect::<VecDeque<_>>();
+    let thread_pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+        let mut finished = HashSet::new();
+        finished.insert(start_file);
+        let mut errors = Vec::new();
 
-    let mut finished = HashSet::new();
-    finished.insert(start_file);
-    let mut errors = Vec::new();
+        while let Some(file_and_location) = queue.pop() {
+            let file = file_and_location.0.clone();
+            let location = file_and_location.1.clone();
 
-    while let Some((file, location)) = queue.pop_front() {
-        if finished.contains(&file) {
-            continue;
+            if finished.contains(&file) {
+                continue;
+            }
+            finished.insert(file.clone());
+
+            let text = read_file(&file).unwrap_or_else(|_| {
+                errors.push(Error::UnknownImportFile { file_name: file.clone(), location });
+
+                // Treat file as an empty string. This will probably just lead to more errors but does
+                // let us continue to collect name/type errors for other files
+                String::new()
+            });
+            set_source_file(&file, text, compiler);
+
+            // Parse and collect imports of the file in a separate thread. This can be helpful
+            // when files contain many imports, so we can parse many of them simultaneously.
+            scope.spawn(|_| {
+                for import in incremental::get_imports(file, compiler) {
+                    queue.push(import);
+                }
+            });
         }
-        finished.insert(file.clone());
-
-        let text = read_file(&file).unwrap_or_else(|_| {
-            errors.push(Error::UnknownImportFile { file_name: file.clone(), location });
-
-            // Treat file as an empty string. This will probably just lead to more errors but does let us continue
-            // to collect name/type errors for other files
-            String::new()
-        });
-        set_source_file(&file, text, compiler);
-
-        let imports = incremental::get_imports(file, compiler);
-        queue.extend(imports.iter().cloned());
-    }
-
-    (finished, errors)
+        (finished, errors)
+    })
 }
 
-fn compile_all(files: HashSet<Rc<String>>, compiler: &mut Compiler) -> Errors {
+fn compile_all(files: HashSet<Arc<String>>, compiler: &mut Compiler) -> Errors {
     for file in files {
         let output_file = file.replace(".ex", ".py");
         let text = incremental::compile_file(file, compiler);
-        if let Err(msg) = write_file(&output_file, text) {
+        if let Err(msg) = write_file(&output_file, &text) {
             println!("! {msg}");
         }
     }

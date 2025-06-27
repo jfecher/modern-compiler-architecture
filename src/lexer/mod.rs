@@ -1,4 +1,4 @@
-use std::{rc::Rc, str::CharIndices};
+use std::{sync::Arc, str::CharIndices};
 use tokens::Token;
 
 use crate::{
@@ -9,9 +9,9 @@ use crate::{
 pub mod tokens;
 
 /// Lex an entire file, returning a vector of tokens in the file
-pub fn lex_file(file_name: Rc<String>, db: &mut CompilerHandle) -> Vec<(Token, Location)> {
+pub fn lex_file(file_name: Arc<String>, db: &CompilerHandle) -> Vec<(Token, Location)> {
     let source_file_text = get_source_file(file_name.clone(), db);
-    let lexer = Lexer::new(source_file_text, file_name);
+    let lexer = Lexer::new(&source_file_text, file_name);
     // Calls `self.next()` until it returns `None`, collecting
     // all tokens into a `Vec<Token>`
     lexer.collect()
@@ -26,7 +26,7 @@ struct Lexer<'src> {
     current_char: char,
     next_char: char,
 
-    file_name: Rc<String>,
+    file_name: Arc<String>,
     current_position: Position,
 
     /// Rust uses UTF-8 so the byte index of the current and next character may
@@ -36,7 +36,7 @@ struct Lexer<'src> {
 }
 
 impl<'src> Lexer<'src> {
-    fn new(source_file_text: &'src str, file_name: Rc<String>) -> Lexer<'src> {
+    fn new(source_file_text: &'src str, file_name: Arc<String>) -> Lexer<'src> {
         let mut lexer = Lexer {
             source_file_len: source_file_text.len(),
             source_file: source_file_text.char_indices(),
@@ -71,7 +71,7 @@ impl<'src> Lexer<'src> {
     }
 
     fn location(&self, start: Position, end: Position) -> Location {
-        Rc::new(LocationData { file_name: self.file_name.clone(), start, end })
+        Arc::new(LocationData { file_name: self.file_name.clone(), start, end })
     }
 
     /// Create a Location with the end Position being `self.current_position`

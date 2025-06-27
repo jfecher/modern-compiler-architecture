@@ -1,4 +1,4 @@
-use std::{hash::Hasher, rc::Rc};
+use std::{hash::Hasher, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ use crate::{
 /// data with an Ast including its Location, and later on its Type.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct TopLevelId {
-    pub file_path: Rc<String>,
+    pub file_path: Arc<String>,
     content_hash: u64,
 }
 
@@ -37,7 +37,7 @@ impl TopLevelId {
     /// to have multiple `import` statements in the same file importing the same file,
     /// to handle this there is also a `collision` counter such that each name collision
     /// within a file increments this and is given a different Id as a result.
-    pub fn new_import(file_path: Rc<String>, import_name: &str, collision: u32) -> TopLevelId {
+    pub fn new_import(file_path: Arc<String>, import_name: &str, collision: u32) -> TopLevelId {
         hash(file_path, (import_name, collision))
     }
 
@@ -45,18 +45,18 @@ impl TopLevelId {
     /// name, and a collision variable to disambiguate multiple definitions of the same name.
     ///
     /// Unfortunately, this means any time a definition is renamed it will have to be recompiled.
-    pub fn new_definition(file_path: Rc<String>, definition_name: &str, collision: u32) -> TopLevelId {
+    pub fn new_definition(file_path: Arc<String>, definition_name: &str, collision: u32) -> TopLevelId {
         hash(file_path, (definition_name, collision))
     }
 
     /// Print statements only have their expression contents so we just hash that.
     /// This means any time what we print is changed we recompile the print statement, but
     /// unlike definitions, this is usually desired.
-    pub fn new_print(file_path: Rc<String>, expr: &Expression, collision: u32) -> TopLevelId {
+    pub fn new_print(file_path: Arc<String>, expr: &Expression, collision: u32) -> TopLevelId {
         hash(file_path, (expr, collision))
     }
 
-    pub(crate) fn location(&self, db: &mut CompilerHandle) -> Location {
+    pub(crate) fn location(&self, db: &CompilerHandle) -> Location {
         let result = incremental::parse_result(self.file_path.clone(), db);
         result.top_level_data[self].location.clone()
     }
@@ -68,7 +68,7 @@ impl std::fmt::Display for TopLevelId {
     }
 }
 
-fn hash(file_path: Rc<String>, x: impl std::hash::Hash) -> TopLevelId {
+fn hash(file_path: Arc<String>, x: impl std::hash::Hash) -> TopLevelId {
     let mut hasher = deterministic_hash::DeterministicHasher::new(std::hash::DefaultHasher::new());
     x.hash(&mut hasher);
     TopLevelId { file_path, content_hash: hasher.finish() }
@@ -99,7 +99,7 @@ impl ExprId {
         ExprId(id)
     }
 
-    pub(crate) fn location(&self, item: &TopLevelId, db: &mut CompilerHandle) -> Location {
+    pub(crate) fn location(&self, item: &TopLevelId, db: &CompilerHandle) -> Location {
         let result = incremental::parse_result(item.file_path.clone(), db);
         result.top_level_data[item].expr_locations[self].clone()
     }

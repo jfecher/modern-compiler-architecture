@@ -1,4 +1,4 @@
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,17 +12,24 @@ pub enum Type {
     Unit,
     Int,
     Generic(Identifier),
-    TypeVariable(TypeVariable),
+    /// We represent type variables with unique ids and an external bindings map instead of a
+    /// `Arc<RwLock<..>>` because these need to be compared for equality, serialized, and
+    /// performant. We want the faster insertion of a local BTreeMap compared to a thread-safe
+    /// version so we use a BTreeMap internally then freeze it in an Arc when finished to be
+    /// able to access it from other threads.
+    TypeVariable(TypeVariableId),
     Function {
-        parameter: Rc<Type>,
-        return_type: Rc<Type>,
+        parameter: Arc<Type>,
+        return_type: Arc<Type>,
     },
 }
 
+pub type TypeBindings = BTreeMap<TypeVariableId, Type>;
+
 impl Type {
     pub fn generalize(&self) -> TopLevelDefinitionType {
+        // TODO
         TopLevelDefinitionType { type_variables: Vec::new(), typ: self.clone() }
-        //todo!()
     }
 
     pub fn from_ast_type(typ: &crate::parser::ast::Type) -> Type {
@@ -30,91 +37,102 @@ impl Type {
             crate::parser::ast::Type::Int => Type::Int,
             crate::parser::ast::Type::Generic(identifier) => Type::Generic(identifier.clone()),
             crate::parser::ast::Type::Function { parameter, return_type } => {
-                let parameter = Rc::new(Self::from_ast_type(parameter));
-                let return_type = Rc::new(Self::from_ast_type(return_type));
+                let parameter = Arc::new(Self::from_ast_type(parameter));
+                let return_type = Arc::new(Self::from_ast_type(return_type));
                 Type::Function { parameter, return_type }
             },
         }
     }
 
     /// Substitutes any unbound type variables with the given id with the corresponding type in the map
-    pub fn substitute(&self, substitutions: &HashMap<TypeVariableId, Type>) -> Type {
+    ///
+    /// `substitutions` is separate from the permanent `bindings` list only to avoid needing to
+    /// clone and merge them before calling this method. There is a slight difference between the
+    /// two: we recur on a found binding, but not on a found substitution. This is because the
+    /// given `bindings` are meant to already be applied to the type.
+    pub fn substitute(&self, substitutions: &TypeBindings, bindings: &TypeBindings) -> Type {
         match self {
             Type::Error | Type::Unit | Type::Int | Type::Generic(_) => self.clone(),
-            Type::TypeVariable(type_variable) => {
-                let binding = type_variable.binding.borrow();
-                match &*binding {
-                    Some(binding) => binding.substitute(substitutions),
-                    None => {
-                        if let Some(substitution) = substitutions.get(&type_variable.id) {
-                            substitution.clone()
-                        } else {
-                            self.clone()
-                        }
-                    },
+            Type::TypeVariable(id) => {
+                if let Some(binding) = bindings.get(&id) {
+                    binding.substitute(substitutions, bindings)
+                } else if let Some(substitution) = substitutions.get(&id) {
+                    substitution.clone()
+                } else {
+                    Type::TypeVariable(*id)
                 }
             },
             Type::Function { parameter, return_type } => {
-                let parameter = Rc::new(parameter.substitute(substitutions));
-                let return_type = Rc::new(return_type.substitute(substitutions));
+                let parameter = Arc::new(parameter.substitute(substitutions, bindings));
+                let return_type = Arc::new(return_type.substitute(substitutions, bindings));
                 Type::Function { parameter, return_type }
             },
         }
     }
+
+    pub fn display<'a, 'b>(&'a self, bindings: &'b TypeBindings) -> TypePrinter<'a, 'b> {
+        TypePrinter { typ: self, bindings }
+    }
 }
 
-impl std::fmt::Display for Type {
+pub struct TypePrinter<'typ, 'bindings> {
+    typ: &'typ Type,
+    bindings: &'bindings TypeBindings,
+}
+
+impl std::fmt::Display for TypePrinter<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
+        self.fmt_type(&self.typ, f)
+    }
+}
+
+impl TypePrinter<'_, '_> {
+    fn fmt_type(&self, typ: &Type, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match typ {
             Type::Error => write!(f, "(error)"),
             Type::Unit => write!(f, "Unit"),
             Type::Int => write!(f, "Int"),
             Type::Generic(identifier) => write!(f, "{}", identifier.name),
-            Type::TypeVariable(type_variable) => {
-                let binding = type_variable.binding.borrow();
-                match &*binding {
-                    Some(binding) => binding.fmt(f),
-                    None => write!(f, "{}", type_variable.id),
+            Type::TypeVariable(id) => {
+                if let Some(binding) = self.bindings.get(&id) {
+                    self.fmt_type(binding, f)
+                } else {
+                    write!(f, "{id}")
                 }
             },
             Type::Function { parameter, return_type } => {
                 if matches!(parameter.as_ref(), Type::Function { .. }) {
-                    write!(f, "({}) -> {}", parameter, return_type)
+                    write!(f, "(")?;
+                    self.fmt_type(parameter, f)?;
+                    write!(f, ") -> ")?;
                 } else {
-                    write!(f, "{} -> {}", parameter, return_type)
+                    self.fmt_type(parameter, f)?;
+                    write!(f, " -> ")?;
                 }
+                self.fmt_type(return_type, f)
             },
         }
     }
-}
-
-/// A type variable is either unbound, or bound to a specific type.
-/// These are essentially the holes that we fill in during type inference.
-#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TypeVariable {
-    /// Each type variable id is local to a TopLevelStatement, similar to ExprIds.
-    pub id: TypeVariableId,
-    pub binding: Rc<RefCell<Option<Type>>>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TypeVariableId(pub u32);
 
 impl TypeVariableId {
-    pub(crate) fn occurs_in(&self, other: &Type) -> bool {
+    pub(crate) fn occurs_in(self, other: &Type, bindings: &TypeBindings) -> bool {
         match other {
             Type::Error => false,
             Type::Unit => false,
             Type::Int => false,
             Type::Generic(_) => false,
-            Type::TypeVariable(type_variable) => {
-                let binding = type_variable.binding.borrow();
-                match &*binding {
-                    Some(binding) => self.occurs_in(binding),
-                    None => *self == type_variable.id,
+            Type::TypeVariable(id) => {
+                if let Some(binding) = bindings.get(&id) {
+                    self.occurs_in(binding, bindings)
+                } else {
+                    self == *id
                 }
             },
-            Type::Function { parameter, return_type } => self.occurs_in(parameter) || self.occurs_in(return_type),
+            Type::Function { parameter, return_type } => self.occurs_in(parameter, bindings) || self.occurs_in(return_type, bindings),
         }
     }
 }
@@ -145,17 +163,26 @@ impl TopLevelDefinitionType {
     pub fn from_ast_type(ast_type: &crate::parser::ast::Type) -> Self {
         Type::from_ast_type(ast_type).generalize()
     }
+
+    pub fn display<'a, 'b>(&'a self, bindings: &'b TypeBindings) -> TopLevelTypePrinter<'a, 'b> {
+        TopLevelTypePrinter { typ: self, bindings }
+    }
 }
 
-impl std::fmt::Display for TopLevelDefinitionType {
+pub struct TopLevelTypePrinter<'typ, 'bindings> {
+    typ: &'typ TopLevelDefinitionType,
+    bindings: &'bindings TypeBindings,
+}
+
+impl std::fmt::Display for TopLevelTypePrinter<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if !self.type_variables.is_empty() {
+        if !self.typ.type_variables.is_empty() {
             write!(f, "forall")?;
-            for id in self.type_variables.iter() {
+            for id in self.typ.type_variables.iter() {
                 write!(f, " {}", id)?;
             }
             write!(f, ". ")?;
         }
-        write!(f, "{}", self.typ)
+        write!(f, "{}", self.typ.display(self.bindings))
     }
 }

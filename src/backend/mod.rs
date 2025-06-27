@@ -1,6 +1,6 @@
 use crate::{incremental::{self, parse, CompileFile, CompilerHandle, TypeCheck}, parser::ast::{Expression, TopLevelStatement}};
 
-pub fn compile_file_impl(context: &CompileFile, compiler: &mut CompilerHandle) -> String {
+pub fn compile_file_impl(context: &CompileFile, compiler: &CompilerHandle) -> String {
     incremental::enter_query();
     incremental::println(format!("Compiling {}", context.file_name));
 

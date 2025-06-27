@@ -1,10 +1,10 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use super::ids::{ExprId, TopLevelId};
 
-pub type Ast = Rc<Program>;
+pub type Ast = Arc<Program>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Program {
@@ -15,7 +15,7 @@ pub struct Program {
 pub enum TopLevelStatement {
     Import { file_name: Identifier, id: TopLevelId },
     Definition(Definition),
-    Print(Rc<Expression>, TopLevelId),
+    Print(Arc<Expression>, TopLevelId),
 }
 
 impl TopLevelStatement {
@@ -30,7 +30,7 @@ impl TopLevelStatement {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Identifier {
-    pub name: Rc<String>,
+    pub name: Arc<String>,
     pub id: ExprId,
 }
 
@@ -38,7 +38,7 @@ pub struct Identifier {
 pub struct Definition {
     pub name: Identifier,
     pub typ: Option<Type>,
-    pub body: Rc<Expression>,
+    pub body: Arc<Expression>,
     pub id: TopLevelId,
 }
 
@@ -46,8 +46,8 @@ pub struct Definition {
 pub enum Expression {
     IntegerLiteral(i64, ExprId),
     Variable(Identifier),
-    FunctionCall { function: Rc<Expression>, argument: Rc<Expression>, id: ExprId },
-    Lambda { parameter_name: Identifier, body: Rc<Expression>, id: ExprId },
+    FunctionCall { function: Arc<Expression>, argument: Arc<Expression>, id: ExprId },
+    Lambda { parameter_name: Identifier, body: Arc<Expression>, id: ExprId },
 }
 
 impl Expression {
@@ -65,5 +65,5 @@ impl Expression {
 pub enum Type {
     Int,
     Generic(Identifier),
-    Function { parameter: Rc<Type>, return_type: Rc<Type> },
+    Function { parameter: Arc<Type>, return_type: Arc<Type> },
 }

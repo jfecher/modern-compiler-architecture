@@ -1,14 +1,14 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::lexer::tokens::Token;
 
-pub type Location = Rc<LocationData>;
+pub type Location = Arc<LocationData>;
 
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocationData {
-    pub file_name: Rc<String>,
+    pub file_name: Arc<String>,
     pub start: Position,
     pub end: Position,
 }
@@ -17,7 +17,7 @@ impl LocationData {
     /// Merge two locations
     pub fn to(&self, end: &LocationData) -> Location {
         assert_eq!(self.file_name, end.file_name);
-        Rc::new(LocationData { file_name: self.file_name.clone(), start: self.start, end: end.end })
+        Arc::new(LocationData { file_name: self.file_name.clone(), start: self.start, end: end.end })
     }
 }
 
@@ -40,10 +40,10 @@ pub type Errors = Vec<Error>;
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Error {
     ParserExpected { rule: String, found: Option<Token>, location: Location },
-    NameAlreadyInScope { name: Rc<String>, first_location: Location, second_location: Location },
-    ImportedNameAlreadyInScope { name: Rc<String>, first_location: Location, second_location: Location },
-    UnknownImportFile { file_name: Rc<String>, location: Location },
-    NameNotInScope { name: Rc<String>, location: Location },
+    NameAlreadyInScope { name: Arc<String>, first_location: Location, second_location: Location },
+    ImportedNameAlreadyInScope { name: Arc<String>, first_location: Location, second_location: Location },
+    UnknownImportFile { file_name: Arc<String>, location: Location },
+    NameNotInScope { name: Arc<String>, location: Location },
     ExpectedType { actual: String, expected: String, location: Location },
     RecursiveType { typ: String, location: Location },
 }

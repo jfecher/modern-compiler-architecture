@@ -38,7 +38,7 @@
 //!   errors there in the future. For types this means if a type fails to parse you can
 //!   also filter out type errors with that error type since error types should always
 //!   correctly type check (and should be hidden from users).
-use std::{collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use ast::{Ast, Definition, Expression, Identifier, Program, TopLevelStatement, Type};
 use ids::{ExprId, TopLevelId};
@@ -58,7 +58,7 @@ struct Parser {
     tokens: Vec<(Token, Location)>,
     current_token_index: usize,
 
-    file_name: Rc<String>,
+    file_name: Arc<String>,
     errors: Vec<Error>,
 
     /// Each expression within a top-level statement receives a monotonically increasing
@@ -74,21 +74,21 @@ struct Parser {
     top_level_data: BTreeMap<TopLevelId, TopLevelMetaData>,
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ParserResult {
     pub ast: Ast,
     pub errors: Errors,
-    pub top_level_data: BTreeMap<TopLevelId, TopLevelMetaData>,
+    pub top_level_data: Arc<BTreeMap<TopLevelId, TopLevelMetaData>>,
 }
 
 /// Additional metadata on a TopLevelStatement
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopLevelMetaData {
     pub location: Location,
     pub expr_locations: BTreeMap<ExprId, Location>,
 }
 
-pub fn parse_impl(params: &Parse, db: &mut CompilerHandle) -> ParserResult {
+pub fn parse_impl(params: &Parse, db: &CompilerHandle) -> ParserResult {
     incremental::enter_query();
     incremental::println(format!("Parsing {}", params.file_name));
 
@@ -97,11 +97,11 @@ pub fn parse_impl(params: &Parse, db: &mut CompilerHandle) -> ParserResult {
     let ast = parser.parse();
 
     incremental::exit_query();
-    ParserResult { ast: Rc::new(ast), errors: parser.errors, top_level_data: parser.top_level_data }
+    ParserResult { ast: Arc::new(ast), errors: parser.errors, top_level_data: Arc::new(parser.top_level_data) }
 }
 
 impl Parser {
-    fn new(file_name: Rc<String>, tokens: Vec<(Token, Location)>) -> Self {
+    fn new(file_name: Arc<String>, tokens: Vec<(Token, Location)>) -> Self {
         Parser {
             file_name,
             tokens,
@@ -130,7 +130,7 @@ impl Parser {
                     // Corner case: file doesn't contain a single token
                     let position = Position::start();
                     let file_name = self.file_name.clone();
-                    Rc::new(LocationData { file_name, start: position, end: position })
+                    Arc::new(LocationData { file_name, start: position, end: position })
                 },
             },
         }
@@ -290,7 +290,7 @@ impl Parser {
         }
 
         self.expect(Token::Equals)?;
-        let body = Rc::new(self.parse_expr()?);
+        let body = Arc::new(self.parse_expr()?);
 
         // TODO: Handle collisions
         let id = TopLevelId::new_definition(self.file_name.clone(), &name.name, 0);
@@ -306,10 +306,10 @@ impl Parser {
         self.expect(Token::Import)?;
         let mut file_name = self.parse_name()?;
 
-        // Hack: Adding the .ex suffix here lets us share this suffix in the Rc
+        // Hack: Adding the .ex suffix here lets us share this suffix in the Arc
         // much more easily without having to cache it and add code to translate between
         // the module name and the file name everywhere else.
-        file_name.name = Rc::new(format!("{}.ex", file_name.name));
+        file_name.name = Arc::new(format!("{}.ex", file_name.name));
 
         // TODO: Handle collisions
         let id = TopLevelId::new_import(self.file_name.clone(), &file_name.name, 0);
@@ -330,7 +330,7 @@ impl Parser {
         let id = TopLevelId::new_print(self.file_name.clone(), &expr, 0);
         self.store_top_level_metadata(id.clone(), location);
 
-        Ok(TopLevelStatement::Print(Rc::new(expr), id))
+        Ok(TopLevelStatement::Print(Arc::new(expr), id))
     }
 
     /// expr: lambda | infix_expr
@@ -357,7 +357,7 @@ impl Parser {
         // each with exactly one parameter
         let mut expr = body;
         for parameter_name in parameters.into_iter().rev() {
-            let body = Rc::new(expr);
+            let body = Arc::new(expr);
             let id = self.next_expr_id(location.clone());
             expr = Expression::Lambda { parameter_name, body, id };
         }
@@ -377,15 +377,15 @@ impl Parser {
             let operator_location = this.current_location();
             this.advance();
             let id = this.next_expr_id(operator_location);
-            let name = Identifier { name: Rc::new(name.into()), id };
+            let name = Identifier { name: Arc::new(name.into()), id };
 
-            let function = Rc::new(Expression::Variable(name));
-            let lhs = Rc::new(expr);
-            let rhs = Rc::new(this.parse_call()?);
+            let function = Arc::new(Expression::Variable(name));
+            let lhs = Arc::new(expr);
+            let rhs = Arc::new(this.parse_call()?);
             let call_location = start.to(&this.current_location());
 
             let id = this.next_expr_id(call_location.clone());
-            let call1 = Rc::new(Expression::FunctionCall { function, argument: lhs, id });
+            let call1 = Arc::new(Expression::FunctionCall { function, argument: lhs, id });
             let id = this.next_expr_id(call_location);
             Ok(Expression::FunctionCall { function: call1, argument: rhs, id })
         };
@@ -404,8 +404,8 @@ impl Parser {
         let mut atom = self.parse_atom()?;
 
         while let Ok(argument) = self.parse_atom() {
-            let function = Rc::new(atom);
-            let argument = Rc::new(argument);
+            let function = Arc::new(atom);
+            let argument = Arc::new(argument);
             let location = start.to(&self.current_location());
             atom = Expression::FunctionCall { function, argument, id: self.next_expr_id(location) };
         }
@@ -417,7 +417,7 @@ impl Parser {
     fn parse_atom(&mut self) -> Result<Expression, Error> {
         match self.current_token_and_location() {
             (Some(Token::Name(name)), location) => {
-                let name = Rc::new(name.clone());
+                let name = Arc::new(name.clone());
                 let name = Identifier { name, id: self.next_expr_id(location) };
                 self.advance();
                 Ok(Expression::Variable(name))
@@ -446,8 +446,8 @@ impl Parser {
         let typ = self.parse_basic_type()?;
 
         if self.accept(Token::RightArrow) {
-            let parameter = Rc::new(typ);
-            let return_type = Rc::new(self.parse_type()?);
+            let parameter = Arc::new(typ);
+            let return_type = Arc::new(self.parse_type()?);
             Ok(Type::Function { parameter, return_type })
         } else {
             Ok(typ)
@@ -462,7 +462,7 @@ impl Parser {
                 Ok(Type::Int)
             },
             Some(Token::Name(name)) => {
-                let name = Rc::new(name.clone());
+                let name = Arc::new(name.clone());
                 let location = self.current_location();
                 let name = Identifier { name, id: self.next_expr_id(location) };
                 self.advance();
@@ -486,7 +486,7 @@ impl Parser {
     fn parse_name(&mut self) -> Result<Identifier, Error> {
         match self.current_token_and_location() {
             (Some(Token::Name(name)), location) => {
-                let name = Rc::new(name.clone());
+                let name = Arc::new(name.clone());
                 self.advance();
                 Ok(Identifier { name, id: self.next_expr_id(location) })
             },

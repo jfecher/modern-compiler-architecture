@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::{
     errors::{Error, Errors, Location},
@@ -10,7 +10,7 @@ use crate::{
 
 /// Collect all definitions which should be visible to expressions within this file.
 /// This includes all top-level definitions within this file, as well as any imported ones.
-pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &mut CompilerHandle) -> (Definitions, Errors) {
+pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &CompilerHandle) -> (Definitions, Errors) {
     incremental::enter_query();
     incremental::println(format!("Collecting visible definitions in {}", context.file_name));
 
@@ -46,7 +46,7 @@ pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &mut CompilerH
 
 /// Collect only the exported definitions within a file.
 /// For this small example language, this is all top-level definitions in a file, except for imported ones.
-pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &mut CompilerHandle) -> (Definitions, Errors) {
+pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &CompilerHandle) -> (Definitions, Errors) {
     incremental::enter_query();
     incremental::println(format!("Collecting exported definitions in {}", context.file_name));
 
@@ -72,7 +72,7 @@ pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &mut Compile
 }
 
 /// Collects the file names of all imports within this file.
-pub fn get_imports_impl(context: &GetImports, db: &mut CompilerHandle) -> Vec<(Rc<String>, Location)> {
+pub fn get_imports_impl(context: &GetImports, db: &CompilerHandle) -> Vec<(Arc<String>, Location)> {
     incremental::enter_query();
     incremental::println(format!("Collecting imports of {}", context.file_name));
 

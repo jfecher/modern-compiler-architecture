@@ -1,6 +1,7 @@
-use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
+use types::TypeBindings;
 
 use crate::{
     errors::{Error, Errors},
@@ -10,7 +11,7 @@ use crate::{
         ast::{Expression, TopLevelStatement},
         ids::{ExprId, TopLevelId},
     },
-    type_inference::types::{TopLevelDefinitionType, Type, TypeVariable, TypeVariableId},
+    type_inference::types::{TopLevelDefinitionType, Type, TypeVariableId},
 };
 
 pub mod types;
@@ -23,7 +24,7 @@ pub mod types;
 /// and we don't want other definitions to depend on the contents of another definition
 /// if the other definition provides a type annotation. Without type annotations the two
 /// functions should be mostly equivalent.
-pub fn get_type_impl(context: &GetType, compiler: &mut CompilerHandle) -> TopLevelDefinitionType {
+pub fn get_type_impl(context: &GetType, compiler: &CompilerHandle) -> TopLevelDefinitionType {
     incremental::enter_query();
     let statement = get_statement(context.0.clone(), compiler);
     incremental::println(format!("Get type of {statement}"));
@@ -47,7 +48,7 @@ pub fn get_type_impl(context: &GetType, compiler: &mut CompilerHandle) -> TopLev
 /// Actually type check a statement and its contents.
 /// Unlike `get_type_impl`, this always type checks the expressions inside a statement
 /// to ensure they type check correctly.
-pub fn type_check_impl(context: &TypeCheck, compiler: &mut CompilerHandle) -> TypeCheckResult {
+pub fn type_check_impl(context: &TypeCheck, compiler: &CompilerHandle) -> TypeCheckResult {
     incremental::enter_query();
     let statement = incremental::get_statement(context.0.clone(), compiler).clone();
     incremental::println(format!("Type checking {statement}"));
@@ -86,19 +87,21 @@ pub struct TypeCheckResult {
 }
 
 struct TypeChecker<'local, 'inner> {
-    compiler: &'local mut CompilerHandle<'inner>,
+    compiler: &'local CompilerHandle<'inner>,
     origins: BTreeMap<ExprId, Origin>,
     expr_types: BTreeMap<ExprId, Type>,
+    bindings: TypeBindings,
     item: TopLevelId,
     next_id: u32,
     errors: Errors,
 }
 
 impl<'local, 'inner> TypeChecker<'local, 'inner> {
-    fn new(item: TopLevelId, resolve: ResolutionResult, compiler: &'local mut CompilerHandle<'inner>) -> Self {
+    fn new(item: TopLevelId, resolve: ResolutionResult, compiler: &'local CompilerHandle<'inner>) -> Self {
         Self {
             compiler,
             item,
+            bindings: Default::default(),
             origins: resolve.origins,
             next_id: 0,
             expr_types: Default::default(),
@@ -110,14 +113,10 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
         TypeCheckResult { typ, expr_types: self.expr_types, errors: self.errors }
     }
 
-    fn next_type_variable(&mut self) -> TypeVariable {
+    fn next_type_variable(&mut self) -> Type {
         let id = TypeVariableId(self.next_id);
         self.next_id += 1;
-        TypeVariable { id, binding: Rc::new(RefCell::new(None)) }
-    }
-
-    fn next_type_variable_t(&mut self) -> Type {
-        Type::TypeVariable(self.next_type_variable())
+        Type::TypeVariable(id)
     }
 
     fn store_and_return_type(&mut self, expr: ExprId, typ: Type) -> Type {
@@ -144,8 +143,8 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
     fn try_get_type_for_builtin(&self, name: &str) -> Option<Type> {
         if name == "+" || name == "-" {
             Some(Type::Function {
-                parameter: Rc::new(Type::Int),
-                return_type: Rc::new(Type::Function { parameter: Rc::new(Type::Int), return_type: Rc::new(Type::Int) }),
+                parameter: Arc::new(Type::Int),
+                return_type: Arc::new(Type::Function { parameter: Arc::new(Type::Int), return_type: Arc::new(Type::Int) }),
             })
         } else {
             None
@@ -162,29 +161,29 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
                 self.store_and_return_type(identifier.id, typ)
             },
             Expression::FunctionCall { function, argument, id } => {
-                let return_type = self.next_type_variable_t();
+                let return_type = self.next_type_variable();
                 let expected = Type::Function {
-                    parameter: Rc::new(self.check_expr(argument)),
-                    return_type: Rc::new(return_type.clone()),
+                    parameter: Arc::new(self.check_expr(argument)),
+                    return_type: Arc::new(return_type.clone()),
                 };
                 let actual = self.check_expr(function);
                 self.unify(&actual, &expected, *id);
                 self.store_and_return_type(*id, return_type)
             },
             Expression::Lambda { parameter_name, body, id } => {
-                let parameter_type = self.next_type_variable_t();
+                let parameter_type = self.next_type_variable();
                 self.expr_types.insert(parameter_name.id, parameter_type.clone());
                 let body_type = self.check_expr(body);
                 let function_type =
-                    Type::Function { parameter: Rc::new(parameter_type), return_type: Rc::new(body_type) };
+                    Type::Function { parameter: Arc::new(parameter_type), return_type: Arc::new(body_type) };
                 self.store_and_return_type(*id, function_type)
             },
         }
     }
 
     fn instantiate(&mut self, typ: &TopLevelDefinitionType) -> Type {
-        let substitutions = typ.type_variables.iter().map(|id| (*id, self.next_type_variable_t())).collect();
-        typ.typ.substitute(&substitutions)
+        let substitutions = typ.type_variables.iter().map(|id| (*id, self.next_type_variable())).collect();
+        typ.typ.substitute(&substitutions, &self.bindings)
     }
 
     fn unify(&mut self, actual: &Type, expected: &Type, id: ExprId) {
@@ -201,33 +200,33 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
                 self.unify(&actual_return_type, &expected_return_type, id);
             },
             // If the type variable is already bound to something, recur on that binding
-            (Type::TypeVariable(actual), expected) if actual.binding.borrow().is_some() => {
-                let actual = actual.binding.borrow();
-                self.unify(actual.as_ref().unwrap(), expected, id);
+            (Type::TypeVariable(type_var), expected) if self.bindings.contains_key(&type_var) => {
+                let actual = self.bindings.get(type_var).unwrap().clone();
+                self.unify(&actual, expected, id);
             },
             // If the type variable is already bound to something, recur on that binding
-            (actual, Type::TypeVariable(expected)) if expected.binding.borrow().is_some() => {
-                let expected = expected.binding.borrow();
-                self.unify(actual, expected.as_ref().unwrap(), id);
+            (actual, Type::TypeVariable(type_var)) if self.bindings.contains_key(&type_var) => {
+                let expected = self.bindings.get(type_var).unwrap().clone();
+                self.unify(actual, &expected, id);
             },
             (type_var_type @ Type::TypeVariable(type_var), other)
             | (other, type_var_type @ Type::TypeVariable(type_var)) => {
                 if type_var_type == other {
                     // Don't bind a type variable to itself
-                } else if !type_var.id.occurs_in(other) {
-                    *type_var.binding.borrow_mut() = Some(other.clone());
+                } else if !type_var.occurs_in(other, &self.bindings) {
+                    self.bindings.insert(*type_var, other.clone());
                 } else {
                     // Error, binding here would make a recursive type!
                     let location = id.location(&self.item, self.compiler);
-                    let actual = actual.to_string();
-                    let expected = expected.to_string();
+                    let actual = actual.display(&self.bindings).to_string();
+                    let expected = expected.display(&self.bindings).to_string();
                     self.errors.push(Error::ExpectedType { actual, expected, location })
                 }
             },
             (actual, expected) => {
                 let location = id.location(&self.item, self.compiler);
-                let actual = actual.to_string();
-                let expected = expected.to_string();
+                let actual = actual.display(&self.bindings).to_string();
+                let expected = expected.display(&self.bindings).to_string();
                 self.errors.push(Error::ExpectedType { actual, expected, location })
             },
         }

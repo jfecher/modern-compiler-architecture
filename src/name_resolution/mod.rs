@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, rc::Rc};
+use std::{collections::BTreeMap, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +23,9 @@ struct Resolver<'local, 'inner> {
     item: TopLevelId,
     links: BTreeMap<ExprId, Origin>,
     errors: Errors,
-    names_in_global_scope: BTreeMap<Rc<String>, TopLevelId>,
-    parameters_in_scope: BTreeMap<Rc<String>, ExprId>,
-    compiler: &'local mut CompilerHandle<'inner>,
+    names_in_global_scope: BTreeMap<Arc<String>, TopLevelId>,
+    parameters_in_scope: BTreeMap<Arc<String>, ExprId>,
+    compiler: &'local CompilerHandle<'inner>,
 }
 
 /// Where was this variable defined?
@@ -38,7 +38,7 @@ pub enum Origin {
     Parameter(ExprId),
 }
 
-pub fn resolve_impl(context: &Resolve, compiler: &mut CompilerHandle) -> ResolutionResult {
+pub fn resolve_impl(context: &Resolve, compiler: &CompilerHandle) -> ResolutionResult {
     incremental::enter_query();
     let statement = incremental::get_statement(context.0.clone(), compiler).clone();
     incremental::println(format!("Resolving {statement}"));
@@ -59,8 +59,8 @@ pub fn resolve_impl(context: &Resolve, compiler: &mut CompilerHandle) -> Resolut
 
 impl<'local, 'inner> Resolver<'local, 'inner> {
     fn new(
-        compiler: &'local mut CompilerHandle<'inner>, item: TopLevelId,
-        names_in_scope: BTreeMap<Rc<String>, TopLevelId>,
+        compiler: &'local CompilerHandle<'inner>, item: TopLevelId,
+        names_in_scope: BTreeMap<Arc<String>, TopLevelId>,
     ) -> Self {
         Self {
             compiler,
@@ -76,7 +76,7 @@ impl<'local, 'inner> Resolver<'local, 'inner> {
         ResolutionResult { origins: self.links, errors: self.errors }
     }
 
-    fn lookup(&self, name: &Rc<String>) -> Option<Origin> {
+    fn lookup(&self, name: &Arc<String>) -> Option<Origin> {
         // Check local parameters first. They shadow global definitions
         if let Some(expr) = self.parameters_in_scope.get(name) {
             return Some(Origin::Parameter(*expr));
@@ -87,7 +87,7 @@ impl<'local, 'inner> Resolver<'local, 'inner> {
         None
     }
 
-    fn link(&mut self, name: &Rc<String>, expr: ExprId) {
+    fn link(&mut self, name: &Arc<String>, expr: ExprId) {
         if name.as_ref() == "+" || name.as_ref() == "-" {
             // Ignore built-ins
         } else if let Some(origin) = self.lookup(name) {
