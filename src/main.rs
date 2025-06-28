@@ -20,7 +20,7 @@
 //! - `src/errors.rs`: Defines each error used in the program as well as the `Location` struct
 //! - `src/incremental.rs`: Some plumbing for the inc-complete library which also defines
 //!   which functions we're caching the result of.
-use incremental::{Compiler, set_source_file};
+use incremental::{set_source_file, CompileFile, Compiler, GetImports};
 use std::{
     collections::HashSet,
     fs::File,
@@ -61,7 +61,7 @@ fn main() {
     let Ok(source) = read_file(INPUT_FILE) else { return };
 
     let file_name = Arc::new(INPUT_FILE.to_string());
-    set_source_file(&file_name, source, &mut compiler);
+    set_source_file(file_name.clone(), source, &mut compiler);
 
     println!("Passes Run:");
 
@@ -102,10 +102,10 @@ fn collect_all_changed_files(start_file: Arc<String>, compiler: &mut Compiler) -
     // We expect `compiler.update_input` to already be called for start_file.
     // Reason being is that we can't start with `start_file` in our queue because
     // it is the only file without a source location for the import, because there was no import.
-    let imports = incremental::get_imports(start_file.clone(), compiler);
+    let imports = compiler.get(GetImports { file_name: start_file.clone() });
     let queue = imports.iter().cloned().collect::<scc::Queue<_>>();
 
-    let thread_pool = rayon::ThreadPoolBuilder::new().build().unwrap();
+    // let thread_pool = rayon::ThreadPoolBuilder::new().build().unwrap();
         let mut finished = HashSet::new();
         finished.insert(start_file);
         let mut errors = Vec::new();
@@ -126,24 +126,23 @@ fn collect_all_changed_files(start_file: Arc<String>, compiler: &mut Compiler) -
                 // let us continue to collect name/type errors for other files
                 String::new()
             });
-            set_source_file(&file, text, compiler);
+            set_source_file(file.clone(), text, compiler);
 
             // Parse and collect imports of the file in a separate thread. This can be helpful
             // when files contain many imports, so we can parse many of them simultaneously.
-            scope.spawn(|_| {
-                for import in incremental::get_imports(file, compiler) {
+            // scope.spawn(|_| {
+                for import in compiler.get(GetImports { file_name: file }) {
                     queue.push(import);
                 }
-            });
+            // });
         }
         (finished, errors)
-    })
 }
 
 fn compile_all(files: HashSet<Arc<String>>, compiler: &mut Compiler) -> Errors {
     for file in files {
         let output_file = file.replace(".ex", ".py");
-        let text = incremental::compile_file(file, compiler);
+        let text = CompileFile { file_name: file }.get(compiler);
         if let Err(msg) = write_file(&output_file, &text) {
             println!("! {msg}");
         }

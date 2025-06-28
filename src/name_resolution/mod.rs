@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::{Error, Errors},
-    incremental::{self, CompilerHandle, Resolve},
+    incremental::{self, CompilerHandle, GetStatement, Resolve, VisibleDefinitions},
     parser::{
         ast::{Expression, TopLevelStatement},
         ids::{ExprId, TopLevelId},
@@ -40,10 +40,10 @@ pub enum Origin {
 
 pub fn resolve_impl(context: &Resolve, compiler: &CompilerHandle) -> ResolutionResult {
     incremental::enter_query();
-    let statement = incremental::get_statement(context.0.clone(), compiler).clone();
+    let statement = GetStatement(context.0.clone()).get(compiler);
     incremental::println(format!("Resolving {statement}"));
 
-    let names_in_scope = incremental::get_globally_visible_definitions(context.0.file_path.clone(), compiler).0.clone();
+    let names_in_scope = compiler.get(VisibleDefinitions { file_name: context.0.file_path.clone() }).0.clone();
 
     let mut resolver = Resolver::new(compiler, context.0.clone(), names_in_scope);
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crate::{
     errors::{Error, Errors, Location},
     incremental::{
-        self, get_exported_definitions, parse, parse_cloned, CompilerHandle, Definitions, ExportedDefinitions, GetImports, VisibleDefinitions
+        self, parse, CompilerHandle, Definitions, ExportedDefinitions, GetImports, VisibleDefinitions
     },
     parser::ast::TopLevelStatement,
 };
@@ -14,15 +14,15 @@ pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &CompilerHandl
     incremental::enter_query();
     incremental::println(format!("Collecting visible definitions in {}", context.file_name));
 
-    let (mut definitions, mut errors) = get_exported_definitions(context.file_name.clone(), db).clone();
+    let (mut definitions, mut errors) = db.get(ExportedDefinitions { file_name: context.file_name.clone() });
 
     // This should always be cached. Ignoring errors here since they should already be
-    // included in get_exported_definitions' errors
+    // included in ExportedDefinitions' errors
     let ast = parse(context.file_name.clone(), db).0.clone();
 
     for item in ast.statements.iter() {
         if let TopLevelStatement::Import { file_name, id: import_id } = item {
-            let (exports, more_errors) = get_exported_definitions(file_name.name.clone(), db).clone();
+            let (exports, more_errors) = db.get(ExportedDefinitions { file_name: file_name.name.clone() });
             errors.extend(more_errors);
 
             for (exported_name, exported_id) in exports {
@@ -50,7 +50,7 @@ pub fn exported_definitions_impl(context: &ExportedDefinitions, db: &CompilerHan
     incremental::enter_query();
     incremental::println(format!("Collecting exported definitions in {}", context.file_name));
 
-    let (ast, mut errors) = parse_cloned(context.file_name.clone(), db);
+    let (ast, mut errors) = incremental::parse(context.file_name.clone(), db);
     let mut definitions = Definitions::default();
 
     // Collect each definition, issuing an error if there is a duplicate name (imports are not counted)
@@ -77,7 +77,7 @@ pub fn get_imports_impl(context: &GetImports, db: &CompilerHandle) -> Vec<(Arc<S
     incremental::println(format!("Collecting imports of {}", context.file_name));
 
     // Ignore parse errors for now, we can report them later
-    let ast = parse(context.file_name.clone(), db).0.clone();
+    let (ast, _errors) = incremental::parse(context.file_name.clone(), db);
     let mut imports = Vec::new();
 
     // Collect each definition, issuing an error if there is a duplicate name (imports are not counted)

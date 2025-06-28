@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::Location,
-    incremental::{self, CompilerHandle},
+    incremental::{CompilerHandle, Parse},
     parser::ast::Expression,
 };
 
@@ -57,7 +57,7 @@ impl TopLevelId {
     }
 
     pub(crate) fn location(&self, db: &CompilerHandle) -> Location {
-        let result = incremental::parse_result(self.file_path.clone(), db);
+        let result = db.get(Parse { file_name: self.file_path.clone() });
         result.top_level_data[self].location.clone()
     }
 }
@@ -100,7 +100,7 @@ impl ExprId {
     }
 
     pub(crate) fn location(&self, item: &TopLevelId, db: &CompilerHandle) -> Location {
-        let result = incremental::parse_result(item.file_path.clone(), db);
+        let result = db.get(Parse { file_name: item.file_path.clone() });
         result.top_level_data[item].expr_locations[self].clone()
     }
 }

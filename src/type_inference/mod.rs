@@ -5,7 +5,7 @@ use types::TypeBindings;
 
 use crate::{
     errors::{Error, Errors},
-    incremental::{self, CompilerHandle, GetType, TypeCheck, get_statement, get_type},
+    incremental::{self, CompilerHandle, GetStatement, GetType, Resolve, TypeCheck},
     name_resolution::{Origin, ResolutionResult},
     parser::{
         ast::{Expression, TopLevelStatement},
@@ -26,7 +26,7 @@ pub mod types;
 /// functions should be mostly equivalent.
 pub fn get_type_impl(context: &GetType, compiler: &CompilerHandle) -> TopLevelDefinitionType {
     incremental::enter_query();
-    let statement = get_statement(context.0.clone(), compiler);
+    let statement = compiler.get(GetStatement(context.0.clone()));
     incremental::println(format!("Get type of {statement}"));
 
     let typ = match statement {
@@ -36,7 +36,7 @@ pub fn get_type_impl(context: &GetType, compiler: &CompilerHandle) -> TopLevelDe
             if let Some(typ) = &definition.typ {
                 TopLevelDefinitionType::from_ast_type(typ)
             } else {
-                let result = incremental::type_check(context.0.clone(), compiler);
+                let result = compiler.get(TypeCheck(context.0.clone()));
                 result.typ.clone()
             }
         },
@@ -50,10 +50,10 @@ pub fn get_type_impl(context: &GetType, compiler: &CompilerHandle) -> TopLevelDe
 /// to ensure they type check correctly.
 pub fn type_check_impl(context: &TypeCheck, compiler: &CompilerHandle) -> TypeCheckResult {
     incremental::enter_query();
-    let statement = incremental::get_statement(context.0.clone(), compiler).clone();
+    let statement = GetStatement(context.0.clone()).get(compiler);
     incremental::println(format!("Type checking {statement}"));
 
-    let resolve = incremental::resolve(context.0.clone(), compiler).clone();
+    let resolve = Resolve(context.0.clone()).get(compiler);
     let mut checker = TypeChecker::new(context.0.clone(), resolve, compiler);
 
     let typ = match statement {
@@ -133,7 +133,7 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
                 // We may recursively type check here. This can lead to infinite
                 // recursion for mutually recursive functions with inferred types.
                 // To simplify type inference for this toy compiler, we don't handle this case.
-                let typ = get_type(id.clone(), self.compiler).clone();
+                let typ = GetType(id.clone()).get(self.compiler);
                 self.instantiate(&typ)
             },
         }
