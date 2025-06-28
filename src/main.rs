@@ -20,17 +20,19 @@
 //! - `src/errors.rs`: Defines each error used in the program as well as the `Location` struct
 //! - `src/incremental.rs`: Some plumbing for the inc-complete library which also defines
 //!   which functions we're caching the result of.
-use incremental::{set_source_file, CompileFile, Compiler, GetImports};
+use incremental::{set_source_file, CompileFile, Compiler};
 use std::{
-    collections::HashSet,
+    collections::BTreeSet,
     fs::File,
     io::{Read, Write},
     sync::Arc,
 };
 
-use crate::errors::{Error, Errors};
+use crate::errors::Errors;
 
 // All the compiler passes:
+// (listed out of order because `cargo fmt` alphabetizes them)
+mod find_changed_files;
 mod definition_collection;
 mod lexer;
 mod name_resolution;
@@ -43,7 +45,7 @@ mod errors;
 mod incremental;
 
 const INPUT_FILE: &str = "input.ex";
-const METADATA_FILE: &str = "incremental_metadata.ron";
+const METADATA_FILE: &str = "incremental_metadata.json";
 
 // Deserialize the compiler from our metadata file.
 // If we fail, just default to a fresh compiler with no cached compilations.
@@ -69,7 +71,7 @@ fn main() {
     // files which have changed. These are the imports to our incremental compilation
     // so we can't dynamically update our inputs within another query. Instead, we
     // can query to collect them all and update them here at top-level.
-    let (files, mut errors) = collect_all_changed_files(file_name, &mut compiler);
+    let (files, mut errors) = find_changed_files::collect_all_changed_files(file_name, &mut compiler);
     errors.extend(compile_all(files, &mut compiler));
 
     println!("Compiler finished.\n");
@@ -83,68 +85,13 @@ fn main() {
     }
 }
 
-/// One limitation of query systems is that you cannot change inputs during an incremental
-/// computation. For a compiler, this means dynamically discovering new files (inputs) to parse is
-/// a bit more difficult. Instead of doing it within an incremental computation like the parser or
-/// during name resolution, we have a separate step here to collect all the files that are used and
-/// check if any have changed. Some frameworks may let you iterate through known inputs where you
-/// may be able to test if a file has changed there, but inc-complete doesn't support this (yet) as
-/// of version 0.5.0.
-///
-/// In `collect_all_changed_files`, we start by parsing the first INPUT_FILE which imports all
-/// other files. We collect each import and for each import we read the new file, set the source
-/// file input (which requires an exclusive &mut reference), and spawn a thread to parse that file
-/// and collect the imports. Spawning multiple threads here is advantageous when a file imports
-/// many source files - we can distribute work to parse many of them at once. The implementation
-/// for this could be more efficient though. For example, the parser could accept the shared `queue`
-/// of files to parse as an argument, and push to this queue immediately when it finds an import.
-fn collect_all_changed_files(start_file: Arc<String>, compiler: &mut Compiler) -> (HashSet<Arc<String>>, Errors) {
-    // We expect `compiler.update_input` to already be called for start_file.
-    // Reason being is that we can't start with `start_file` in our queue because
-    // it is the only file without a source location for the import, because there was no import.
-    let imports = compiler.get(GetImports { file_name: start_file.clone() });
-    let queue = imports.iter().cloned().collect::<scc::Queue<_>>();
-
-    // let thread_pool = rayon::ThreadPoolBuilder::new().build().unwrap();
-        let mut finished = HashSet::new();
-        finished.insert(start_file);
-        let mut errors = Vec::new();
-
-        while let Some(file_and_location) = queue.pop() {
-            let file = file_and_location.0.clone();
-            let location = file_and_location.1.clone();
-
-            if finished.contains(&file) {
-                continue;
-            }
-            finished.insert(file.clone());
-
-            let text = read_file(&file).unwrap_or_else(|_| {
-                errors.push(Error::UnknownImportFile { file_name: file.clone(), location });
-
-                // Treat file as an empty string. This will probably just lead to more errors but does
-                // let us continue to collect name/type errors for other files
-                String::new()
-            });
-            set_source_file(file.clone(), text, compiler);
-
-            // Parse and collect imports of the file in a separate thread. This can be helpful
-            // when files contain many imports, so we can parse many of them simultaneously.
-            // scope.spawn(|_| {
-                for import in compiler.get(GetImports { file_name: file }) {
-                    queue.push(import);
-                }
-            // });
-        }
-        (finished, errors)
-}
-
-fn compile_all(files: HashSet<Arc<String>>, compiler: &mut Compiler) -> Errors {
+/// Compile all the files in the set to python files
+fn compile_all(files: BTreeSet<Arc<String>>, compiler: &mut Compiler) -> Errors {
     for file in files {
         let output_file = file.replace(".ex", ".py");
         let text = CompileFile { file_name: file }.get(compiler);
         if let Err(msg) = write_file(&output_file, &text) {
-            println!("! {msg}");
+            eprintln!("error: {msg}");
         }
     }
     Vec::new()
@@ -161,6 +108,7 @@ fn write_file(file_name: &str, text: &str) -> Result<(), String> {
 /// This could be changed so that we only write if the metadata actually
 /// changed but to simplify things we just always write.
 fn write_metadata(compiler: Compiler) -> Result<(), String> {
+    // Using `to_writer` here would avoid the intermediate step of creating the string
     let serialized = ron::to_string(&compiler).map_err(|error| format!("Failed to serialize database:\n{error}"))?;
     write_file(METADATA_FILE, &serialized)
 }

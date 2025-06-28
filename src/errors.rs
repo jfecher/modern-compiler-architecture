@@ -6,7 +6,7 @@ use crate::lexer::tokens::Token;
 
 pub type Location = Arc<LocationData>;
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct LocationData {
     pub file_name: Arc<String>,
     pub start: Position,
@@ -21,7 +21,7 @@ impl LocationData {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Position {
     pub byte_index: usize,
     pub line_number: u32,
