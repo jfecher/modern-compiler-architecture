@@ -45,7 +45,7 @@ mod errors;
 mod incremental;
 
 const INPUT_FILE: &str = "input.ex";
-const METADATA_FILE: &str = "incremental_metadata.json";
+const METADATA_FILE: &str = "incremental_metadata.ron";
 
 // Deserialize the compiler from our metadata file.
 // If we fail, just default to a fresh compiler with no cached compilations.

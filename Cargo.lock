@@ -57,6 +57,8 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 [[package]]
 name = "inc-complete"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c17c023f7c132fab9773787123f69395abc6336001844dcf10b0cfc1c524558"
 dependencies = [
  "scc",
  "serde",
