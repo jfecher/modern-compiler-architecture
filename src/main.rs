@@ -79,6 +79,9 @@ fn main() {
 
     println!("Compiler finished.\n");
 
+    if !errors.is_empty() {
+        println!("errors:");
+    }
     for error in errors {
         println!("  {}", error.message());
     }
@@ -88,16 +91,19 @@ fn main() {
     }
 }
 
-/// Compile all the files in the set to python files
+/// Compile all the files in the set to python files. In a real compiler we may want
+/// to compile each as an independent llvm or cranelift module then link them all
+/// together at the end.
 fn compile_all(files: BTreeSet<Arc<String>>, compiler: &mut Compiler) -> Errors {
-    files.into_par_iter().for_each(|file| {
+    files.into_par_iter().flat_map(|file| {
         let output_file = file.replace(".ex", ".py");
-        let text = CompileFile { file_name: file }.get(compiler);
+        let (text, errors) = CompileFile { file_name: file }.get(compiler);
+
         if let Err(msg) = write_file(&output_file, &text) {
             eprintln!("error: {msg}");
         }
-    });
-    Vec::new()
+        errors
+    }).collect()
 }
 
 fn write_file(file_name: &str, text: &str) -> Result<(), String> {

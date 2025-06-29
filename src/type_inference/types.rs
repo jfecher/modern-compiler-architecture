@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +11,11 @@ pub enum Type {
     Error,
     Unit,
     Int,
+    /// A user-supplied generic type. We don't want to bind over these like we do with type variables.
     Generic(Identifier),
     /// We represent type variables with unique ids and an external bindings map instead of a
-    /// `Arc<RwLock<..>>` because these need to be compared for equality, serialized, and
-    /// performant. We want the faster insertion of a local BTreeMap compared to a thread-safe
+    /// `Arc<RwLock<..>>` or similar because these need to be compared for equality, serialized, and
+    /// be performant. We want the faster insertion of a local BTreeMap compared to a thread-safe
     /// version so we use a BTreeMap internally then freeze it in an Arc when finished to be
     /// able to access it from other threads.
     TypeVariable(TypeVariableId),
@@ -24,14 +25,13 @@ pub enum Type {
     },
 }
 
+/// Maps type variables to their bindings
 pub type TypeBindings = BTreeMap<TypeVariableId, Type>;
 
-impl Type {
-    pub fn generalize(&self) -> TopLevelDefinitionType {
-        // TODO
-        TopLevelDefinitionType { type_variables: Vec::new(), typ: self.clone() }
-    }
+/// Maps generics to new types to instantiate them with
+pub type Substitutions = BTreeMap<Arc<String>, Type>;
 
+impl Type {
     pub fn from_ast_type(typ: &crate::parser::ast::Type) -> Type {
         match typ {
             crate::parser::ast::Type::Int => Type::Int,
@@ -44,24 +44,25 @@ impl Type {
         }
     }
 
-    /// Substitutes any unbound type variables with the given id with the corresponding type in the map
-    ///
-    /// `substitutions` is separate from the permanent `bindings` list only to avoid needing to
-    /// clone and merge them before calling this method. There is a slight difference between the
-    /// two: we recur on a found binding, but not on a found substitution. This is because the
-    /// given `bindings` are meant to already be applied to the type.
-    pub fn substitute(&self, substitutions: &TypeBindings, bindings: &TypeBindings) -> Type {
+    /// Substitutes any generics with the given names with the corresponding type in the map
+    pub fn substitute(&self, substitutions: &Substitutions, bindings: &TypeBindings) -> Type {
         match self {
-            Type::Error | Type::Unit | Type::Int | Type::Generic(_) => self.clone(),
+            Type::Error | Type::Unit | Type::Int => self.clone(),
             Type::TypeVariable(id) => {
                 if let Some(binding) = bindings.get(&id) {
                     binding.substitute(substitutions, bindings)
-                } else if let Some(substitution) = substitutions.get(&id) {
-                    substitution.clone()
                 } else {
                     Type::TypeVariable(*id)
                 }
             },
+            Type::Generic(name) => {
+                if let Some(substitution) = substitutions.get(&name.name) {
+                    // Don't recur here, we've already substituted
+                    substitution.clone()
+                } else {
+                    Type::Generic(name.clone())
+                }
+            }
             Type::Function { parameter, return_type } => {
                 let parameter = Arc::new(parameter.substitute(substitutions, bindings));
                 let return_type = Arc::new(return_type.substitute(substitutions, bindings));
@@ -72,6 +73,23 @@ impl Type {
 
     pub fn display<'a, 'b>(&'a self, bindings: &'b TypeBindings) -> TypePrinter<'a, 'b> {
         TypePrinter { typ: self, bindings }
+    }
+
+    pub fn find_all_generics(&self) -> Vec<Arc<String>> {
+        let mut found = BTreeSet::new();
+        self.find_all_generics_helper(&mut found);
+        found.into_iter().collect()
+    }
+
+    fn find_all_generics_helper(&self, found: &mut BTreeSet<Arc<String>>) {
+        match self {
+            Type::Error | Type::Unit | Type::Int | Type::TypeVariable(_) => (),
+            Type::Generic(name) => { found.insert(name.name.clone()); },
+            Type::Function { parameter, return_type } => {
+                parameter.find_all_generics_helper(found);
+                return_type.find_all_generics_helper(found);
+            },
+        }
     }
 }
 
@@ -147,25 +165,27 @@ impl std::fmt::Display for TypeVariableId {
 /// Other definitions like parameters are never generic.
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TopLevelDefinitionType {
-    pub type_variables: Vec<TypeVariableId>,
+    pub generics: Vec<Arc<String>>,
     pub typ: Type,
 }
 
 impl TopLevelDefinitionType {
-    pub fn new(type_variables: Vec<TypeVariableId>, typ: Type) -> Self {
-        Self { typ, type_variables }
+    pub fn new(generics: Vec<Arc<String>>, typ: Type) -> Self {
+        Self { typ, generics }
     }
 
     pub fn unit() -> TopLevelDefinitionType {
         Self::new(Vec::new(), Type::Unit)
     }
 
-    pub fn from_ast_type(ast_type: &crate::parser::ast::Type) -> Self {
-        Type::from_ast_type(ast_type).generalize()
-    }
-
     pub fn display<'a, 'b>(&'a self, bindings: &'b TypeBindings) -> TopLevelTypePrinter<'a, 'b> {
         TopLevelTypePrinter { typ: self, bindings }
+    }
+
+    pub fn from_ast_type(typ: &crate::parser::ast::Type) -> Self {
+        let typ = Type::from_ast_type(typ);
+        let generics = typ.find_all_generics();
+        Self::new(generics, typ)
     }
 }
 
@@ -176,9 +196,9 @@ pub struct TopLevelTypePrinter<'typ, 'bindings> {
 
 impl std::fmt::Display for TopLevelTypePrinter<'_, '_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        if !self.typ.type_variables.is_empty() {
+        if !self.typ.generics.is_empty() {
             write!(f, "forall")?;
-            for id in self.typ.type_variables.iter() {
+            for id in self.typ.generics.iter() {
                 write!(f, " {}", id)?;
             }
             write!(f, ". ")?;

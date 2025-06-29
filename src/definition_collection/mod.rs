@@ -14,16 +14,17 @@ pub fn visible_definitions_impl(context: &VisibleDefinitions, db: &CompilerHandl
     incremental::enter_query();
     incremental::println(format!("Collecting visible definitions in {}", context.file_name));
 
-    let (mut definitions, mut errors) = db.get(ExportedDefinitions { file_name: context.file_name.clone() });
+    let (mut definitions, mut errors) = ExportedDefinitions { file_name: context.file_name.clone() }.get(db);
 
     // This should always be cached. Ignoring errors here since they should already be
     // included in ExportedDefinitions' errors
-    let ast = parse(context.file_name.clone(), db).0.clone();
+    let ast = parse(context.file_name.clone(), db).0;
 
     for item in ast.statements.iter() {
         if let TopLevelStatement::Import { file_name, id: import_id } = item {
-            let (exports, more_errors) = db.get(ExportedDefinitions { file_name: file_name.name.clone() });
-            errors.extend(more_errors);
+            // Ignore errors from imported files. We want to only collect errors
+            // from this file. Otherwise we'll duplicate errors.
+            let (exports, _errors) = ExportedDefinitions { file_name: file_name.name.clone() }.get(db);
 
             for (exported_name, exported_id) in exports {
                 if let Some(existing) = definitions.get(&exported_name) {

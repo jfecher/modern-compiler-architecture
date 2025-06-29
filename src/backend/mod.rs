@@ -1,17 +1,24 @@
-use crate::{incremental::{self, parse, CompileFile, CompilerHandle, TypeCheck}, parser::ast::{Expression, TopLevelStatement}};
+use crate::{errors::Errors, incremental::{self, parse, CompileFile, CompilerHandle, TypeCheck, VisibleDefinitions}, parser::ast::{Expression, TopLevelStatement}};
 
-pub fn compile_file_impl(context: &CompileFile, compiler: &CompilerHandle) -> String {
+/// Compile a given source file to python, returning any errors in the file.
+pub fn compile_file_impl(context: &CompileFile, compiler: &CompilerHandle) -> (String, Errors) {
     incremental::enter_query();
     incremental::println(format!("Compiling {}", context.file_name));
 
-    let ast = parse(context.file_name.clone(), compiler).0.clone();
+    // Ignore errors for this parse, they'll be included in the VisibleDefinitions call.
+    let ast = parse(context.file_name.clone(), compiler).0;
     let mut text = String::new();
+
+    // inc-complete doesn't currently provide an accumulator abstraction so we have to manually
+    // call VisibleDefinitions to collect the errors that are discarded in resolution.
+    let (_, mut errors) = VisibleDefinitions { file_name: context.file_name.clone() }.get(compiler);
 
     for statement in ast.statements.iter() {
         // Since we're compiling to python we don't actually need any type informtation
         // but we still want to type check and any real compiler would need the information
         // so we type check each top-level item anyway.
-        compiler.get(TypeCheck(statement.id().clone()));
+        let results = TypeCheck(statement.id().clone()).get(compiler);
+        errors.extend(results.errors);
 
         match statement {
             TopLevelStatement::Import { file_name, id: _ } => {
@@ -28,7 +35,7 @@ pub fn compile_file_impl(context: &CompileFile, compiler: &CompilerHandle) -> St
     }
 
     incremental::exit_query();
-    text
+    (text, errors)
 }
 
 fn expr_string(expr: &Expression) -> String {

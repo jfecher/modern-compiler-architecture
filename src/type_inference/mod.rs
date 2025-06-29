@@ -68,9 +68,9 @@ pub fn type_check_impl(context: &TypeCheck, compiler: &CompilerHandle) -> TypeCh
             if let Some(typ) = &definition.typ {
                 let expected = Type::from_ast_type(typ);
                 checker.unify(&actual_type, &expected, definition.body.id());
-                expected.generalize()
+                checker.generalize(&expected)
             } else {
-                actual_type.generalize()
+                checker.generalize(&actual_type)
             }
         },
     };
@@ -151,6 +151,45 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
         }
     }
 
+    /// Generalize a type, making it generic. Any holes in the type become generic types.
+    fn generalize(&mut self, typ: &Type) -> TopLevelDefinitionType {
+        // The `generics` list in `TopLevelDefinitionType` can only map `Type::Generic` so
+        // we have to manually replace type variables here with generics with somewhat arbitrary
+        // names.
+        let typ = self.replace_type_variables_with_named_generics(typ);
+
+        // TODO: We should exclude any type variables which "escape" when generalizing.
+        // See http://okmij.org/ftp/ML/generalization.html.
+        let generics = typ.find_all_generics();
+        TopLevelDefinitionType::new(generics, typ)
+    }
+
+    /// Replaces any `Type::TypeVariable`s with `Type::Generic`s.
+    /// Their names are simply their integer ids converted to a string to ensure they do not
+    /// collide with the names of any existing generics in the same type.
+    fn replace_type_variables_with_named_generics(&mut self, typ: &Type) -> Type {
+        match typ {
+            Type::Error => Type::Error,
+            Type::Unit => Type::Unit,
+            Type::Int => Type::Int,
+            Type::Generic(name) => Type::Generic(name.clone()),
+            Type::TypeVariable(id) => {
+                let name = Arc::new(id.0.to_string());
+                // FIXME: We have to provide an ExprId when creating the generic identifier but we
+                // lack the context to create a fresh one. It's not too important for this toy
+                // compiler but a real one would probably want to rework type generalization in
+                // general.
+                let id = ExprId::new(u32::MAX);
+                Type::Generic(crate::parser::ast::Identifier { name, id })
+            },
+            Type::Function { parameter, return_type } => {
+                let parameter = Arc::new(self.replace_type_variables_with_named_generics(parameter));
+                let return_type = Arc::new(self.replace_type_variables_with_named_generics(return_type));
+                Type::Function { parameter, return_type }
+            },
+        }
+    }
+
     fn check_expr(&mut self, expr: &Expression) -> Type {
         match expr {
             Expression::IntegerLiteral(_, id) => self.store_and_return_type(*id, Type::Int),
@@ -182,7 +221,7 @@ impl<'local, 'inner> TypeChecker<'local, 'inner> {
     }
 
     fn instantiate(&mut self, typ: &TopLevelDefinitionType) -> Type {
-        let substitutions = typ.type_variables.iter().map(|id| (*id, self.next_type_variable())).collect();
+        let substitutions = typ.generics.iter().map(|name| (name.clone(), self.next_type_variable())).collect();
         typ.typ.substitute(&substitutions, &self.bindings)
     }
 

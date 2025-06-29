@@ -1,10 +1,13 @@
 # Status
 
-**WIP - Please Ignore for Now!**
+**Working**(*) - could use more explanation in places.
+
+(*) We don't check generalized types for escaped type variables!
+See [algorithm-j](https://github.com/jfecher/algorithm-j) for a more complete example of type inference.
 
 # Intro
 
-This compiler is an example meant to show one possible architecture of a modern compiler
+This compiler is a learning resource meant to show one possible architecture of a modern compiler
 that is incremental, concurrent, and fault-tolerant. It takes into account the recent
 move away from a traditional pipeline-style compiler towards a demand-driven compiler
 designed for faster rebuilds with a language server in mind.
@@ -14,9 +17,9 @@ Instead, I'm prioritizing code clarity and size to better convey to those gettin
 compiler development how one may go about writing such a compiler.
 
 This codebase uses Rust as the implementation language and inc-complete as the library
-for incremental computations but the general techniques should be applicable to any language.
-If you have any questions on techniques used or just trouble understanding parts of the
-codebase please feel free to open an issue!
+for incremental computations due to its support for serialization but the general techniques
+should be applicable to any language. If you have any questions on techniques used or just
+trouble understanding parts of the codebase please feel free to open an issue!
 
 # Compiler features
 
@@ -45,6 +48,63 @@ codebase please feel free to open an issue!
 
 For more details on each, read the source files for each pass! They are commented and meant to be read.
 
+# Running the compiler
+
+Make sure you have Rust installed. Afterward, just run `cargo run` in this directory after cloning
+the repository and the compiler will compile `input.ex` and each file imported from it. You should
+expect to see output which shows each query the compiler performs, and which thread it is done on:
+
+```
+Passes Run:
+ThreadId(21):   - Collecting imports of input.ex
+ThreadId(21):     - Parsing input.ex
+ThreadId(19):   - Collecting imports of import_1.ex
+ThreadId(04):   - Collecting imports of import_2.ex
+ThreadId(19):     - Parsing import_1.ex
+ThreadId(04):     - Parsing import_2.ex
+ThreadId(04):   - Collecting imports of import_1_1.ex
+ThreadId(04):     - Parsing import_1_1.ex
+... etc
+ThreadId(42):   - Compiling import_2_2.ex
+ThreadId(41):   - Compiling import_2_1.ex
+ThreadId(36):     - Collecting visible definitions in input.ex
+ThreadId(44):       - Collecting exported definitions in import_1_2.ex
+ThreadId(45):     - Collecting visible definitions in import_1_1.ex
+ThreadId(36):       - Collecting exported definitions in input.ex
+ThreadId(45):       - Collecting exported definitions in import_1_1.ex
+ThreadId(38):     - Collecting visible definitions in import_2.ex
+ThreadId(41):     - Collecting visible definitions in import_2_1.ex
+ThreadId(43):     - Collecting visible definitions in import_1.ex
+ThreadId(36):       - Collecting exported definitions in import_1.ex
+ThreadId(41):       - Collecting exported definitions in import_2_1.ex
+... etc
+ThreadId(38):       - Resolving import import_2_1.ex
+ThreadId(43):     - Type checking import import_1_1.ex
+ThreadId(42):     - Type checking def one_hundred = 100
+ThreadId(43):       - Resolving import import_1_1.ex
+ThreadId(38):     - Type checking import import_2_2.ex
+ThreadId(36):     - Type checking import import_2.ex
+ThreadId(42):       - Resolving def one_hundred = 100
+ThreadId(38):       - Resolving import import_2_2.ex
+ThreadId(36):       - Resolving import import_2.ex
+ThreadId(36):     - Type checking def add = fn x -> fn y -> + x y
+ThreadId(38):     - Type checking def add10_conflicting: Int -> Int = fn x -> + (sub3 x) 13
+ThreadId(36):       - Resolving def add = fn x -> fn y -> + x y
+ThreadId(38):       - Resolving def add10_conflicting: Int -> Int = fn x -> + (sub3 x) 13
+ThreadId(43):     - Type checking import import_1_2.ex
+ThreadId(38):       - Get type of def sub3: Int -> Int = fn x -> + x 3
+.. etc
+Compiler finished.
+
+errors:
+  import_2_1.ex:4: Expected `=` but found `bar`
+  input.ex:7: This imports `add10_conflicting`, which has already been defined here: import_1.ex:5
+  input.ex:25: `never_defined` is not defined, was it a typo?
+  input.ex:33: `defined_in_import_of_import` is not defined, was it a typo?
+```
+
+After that, try changing any of the source files to observe which computations are re-done!
+
 # The language
 
 The language was designed to be as simple as possible while also providing good points for
@@ -65,7 +125,6 @@ import bar
 // Type inference is supported
 // You can think of this as `def add(x, y): return x + y` in python
 def add = fn x y ->
-    // The only supported operators are `+` and `-`!
     x + y
 
 // Explicit types on a `def` can be specified:
@@ -85,5 +144,6 @@ print add 1 2
 
 Note that the following features are _not_ supported:
 - Any data type other than (a 64-bit) `Int` or functions
+- Any operator other than `+` or `-`
 - Mutual recursion in type inference
 - Cycles in module imports (modules must form a directed acyclic graph)
