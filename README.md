@@ -32,11 +32,14 @@ trouble understanding parts of the codebase please feel free to open an issue!
   caching is. If you are too fine-grained you're caching a lot and may be slowed down performing
   too many equality checks and lugging around extra storage, but if you are too course grained you
   may be unnecessarily recompiling portions of the program which do not actually need to be recompiled.
-  - This compiler generally caches each top-level item. More detail is given in the source code for
+  - This compiler generally caches each top-level item. More detail is given in `src/incremental.rs` for
   specific passes.
 - Concurrent
   - When it is able to, the compiler prefers to perform work concurrently or in parallel, making
   use of more CPU cores.
+  - The compiler uses concurrency in two places:
+    1. When collecting and parsing source files to find changed files.
+    2. After we collect a list of all source files used, we compile them all in parallel
 - Fault-tolerant
   - Parser always produces a valid AST. If there are errors parsing it also returns a list of
   errors along with the AST. For example, if there is a syntax error in a top-level definition,
@@ -45,8 +48,13 @@ trouble understanding parts of the codebase please feel free to open an issue!
   where syntax errors are very common mid-edit.
   - Name resolution and type checking can continue on error and make some attempt not to emit
   duplicate errors (not perfect).
+    - For example, a special type `Type::Error` is used for names which have failed to resolve. This
+    type unifies with everything so we avoid issuing type errors for names which have already failed to resolve.
 
 For more details on each, read the source files for each pass! They are commented and meant to be read.
+As a good place to start, `src/main.rs` contains the entry point of the program where we (de)serialize
+the compiler and run it on each input file. `src/incremental.rs` contains setup for `inc-complete` and
+each function we cache. Individual passes are located in their own folder under `src`.
 
 # Running the compiler
 
@@ -71,22 +79,7 @@ ThreadId(36):     - Collecting visible definitions in input.ex
 ThreadId(44):       - Collecting exported definitions in import_1_2.ex
 ThreadId(45):     - Collecting visible definitions in import_1_1.ex
 ThreadId(36):       - Collecting exported definitions in input.ex
-ThreadId(45):       - Collecting exported definitions in import_1_1.ex
-ThreadId(38):     - Collecting visible definitions in import_2.ex
-ThreadId(41):     - Collecting visible definitions in import_2_1.ex
-ThreadId(43):     - Collecting visible definitions in import_1.ex
-ThreadId(36):       - Collecting exported definitions in import_1.ex
-ThreadId(41):       - Collecting exported definitions in import_2_1.ex
 ... etc
-ThreadId(38):       - Resolving import import_2_1.ex
-ThreadId(43):     - Type checking import import_1_1.ex
-ThreadId(42):     - Type checking def one_hundred = 100
-ThreadId(43):       - Resolving import import_1_1.ex
-ThreadId(38):     - Type checking import import_2_2.ex
-ThreadId(36):     - Type checking import import_2.ex
-ThreadId(42):       - Resolving def one_hundred = 100
-ThreadId(38):       - Resolving import import_2_2.ex
-ThreadId(36):       - Resolving import import_2.ex
 ThreadId(36):     - Type checking def add = fn x -> fn y -> + x y
 ThreadId(38):     - Type checking def add10_conflicting: Int -> Int = fn x -> + (sub3 x) 13
 ThreadId(36):       - Resolving def add = fn x -> fn y -> + x y
