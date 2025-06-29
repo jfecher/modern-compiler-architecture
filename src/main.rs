@@ -21,6 +21,7 @@
 //! - `src/incremental.rs`: Some plumbing for the inc-complete library which also defines
 //!   which functions we're caching the result of.
 use incremental::{set_source_file, CompileFile, Compiler};
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use std::{
     collections::BTreeSet,
     fs::File,
@@ -50,17 +51,19 @@ const METADATA_FILE: &str = "incremental_metadata.ron";
 // Deserialize the compiler from our metadata file.
 // If we fail, just default to a fresh compiler with no cached compilations.
 fn make_compiler() -> Compiler {
-    let Ok(text) = read_file(METADATA_FILE) else {
-        return Compiler::default();
-    };
-
-    ron::from_str(&text).unwrap_or_default()
+    match read_file(METADATA_FILE) {
+        Ok(text) => ron::from_str(&text).unwrap_or_default(),
+        Err(_) => Compiler::default(),
+    }
 }
 
 fn main() {
     let mut compiler = make_compiler();
 
-    let Ok(source) = read_file(INPUT_FILE) else { return };
+    let source = read_file(INPUT_FILE).unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    });
 
     let file_name = Arc::new(INPUT_FILE.to_string());
     set_source_file(file_name.clone(), source, &mut compiler);
@@ -68,8 +71,8 @@ fn main() {
     println!("Passes Run:");
 
     // First, run through our input file and any imports recursively to find any
-    // files which have changed. These are the imports to our incremental compilation
-    // so we can't dynamically update our inputs within another query. Instead, we
+    // files which have changed. These are the inputs to our incremental compilation
+    // and we can't dynamically update our inputs within another query. Instead, we
     // can query to collect them all and update them here at top-level.
     let (files, mut errors) = find_changed_files::collect_all_changed_files(file_name, &mut compiler);
     errors.extend(compile_all(files, &mut compiler));
@@ -87,13 +90,13 @@ fn main() {
 
 /// Compile all the files in the set to python files
 fn compile_all(files: BTreeSet<Arc<String>>, compiler: &mut Compiler) -> Errors {
-    for file in files {
+    files.into_par_iter().for_each(|file| {
         let output_file = file.replace(".ex", ".py");
         let text = CompileFile { file_name: file }.get(compiler);
         if let Err(msg) = write_file(&output_file, &text) {
             eprintln!("error: {msg}");
         }
-    }
+    });
     Vec::new()
 }
 
