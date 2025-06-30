@@ -16,7 +16,7 @@ This is not at all meant to be a maximally performant or featureful compiler.
 Instead, I'm prioritizing code clarity and size to better convey to those getting into
 compiler development how one may go about writing such a compiler.
 
-This codebase uses Rust as the implementation language and inc-complete as the library
+This codebase uses Rust as the implementation language and [inc-complete](https://github.com/jfecher/inc-complete) as the library
 for incremental computations due to its support for serialization but the general techniques
 should be applicable to any language. If you have any questions on techniques used or just
 trouble understanding parts of the codebase please feel free to open an issue!
